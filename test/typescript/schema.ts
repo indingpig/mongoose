@@ -1,4 +1,4 @@
-import { Schema, Document, SchemaDefinition, SchemaDefinitionProperty, Model } from 'mongoose';
+import { Schema, Document, SchemaDefinition, Model, DocumentDefinition } from 'mongoose';
 
 enum Genre {
   Action,
@@ -19,7 +19,8 @@ interface Movie {
   rating?: number,
   genre?: string,
   actionIntensity?: number,
-  actors?: Actor[]
+  status?: string,
+  actors: Actor[]
 }
 
 const movieSchema = new Schema<Document<Movie>, Model<Document<Movie>>, Movie>({
@@ -51,6 +52,13 @@ const movieSchema = new Schema<Document<Movie>, Model<Document<Movie>>, Movie>({
       },
       'Action intensity required for action genre'
     ]
+  },
+  status: {
+    type: String,
+    enum: {
+      values: ['Announced', 'Released'],
+      message: 'Invalid value for `status`'
+    }
   },
   actors: {
     type: [actorSchema],
@@ -100,4 +108,59 @@ async function gh9857() {
   };
 
   const schema = new Schema<UserDocument, UserModel, User>(schemaDefinition);
+}
+
+function gh10261() {
+  interface ValuesEntity {
+    values: string[];
+  }
+
+  const type: ReadonlyArray<typeof String> = [String];
+  const colorEntitySchemaDefinition: SchemaDefinition<DocumentDefinition<ValuesEntity>> = {
+    values: {
+      type: type,
+      required: true
+    }
+  };
+}
+
+function gh10287() {
+  interface SubSchema {
+    testProp: string;
+  }
+
+  const subSchema = new Schema<Document & SubSchema, Model<Document & SubSchema>, SubSchema>({
+    testProp: Schema.Types.String
+  });
+
+  interface MainSchema {
+    subProp: SubSchema
+  }
+
+  const mainSchema1 = new Schema<Document & MainSchema, Model<Document & MainSchema>, MainSchema>({
+    subProp: subSchema
+  });
+
+  const mainSchema2 = new Schema<Document & MainSchema, Model<Document & MainSchema>, MainSchema>({
+    subProp: {
+      type: subSchema
+    }
+  });
+}
+
+function gh10370() {
+  const movieSchema = new Schema<Document & Movie, Model<Document & Movie>, Movie>({
+    actors: {
+      type: [actorSchema]
+    }
+  });
+}
+
+function gh10409() {
+  interface Something {
+    field: Date;
+  }
+  const someSchema = new Schema<Something, Model<Something>, Something>({
+    field: { type: Date }
+  });
 }

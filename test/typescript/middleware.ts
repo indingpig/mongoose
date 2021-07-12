@@ -1,4 +1,4 @@
-import { Schema, model, Model, Document, Types, Query, Aggregate } from 'mongoose';
+import { Schema, model, Model, Document, SaveOptions, Query, Aggregate } from 'mongoose';
 
 const schema: Schema = new Schema({ name: { type: 'String' } });
 
@@ -22,6 +22,11 @@ schema.pre(['save', 'validate'], { query: false, document: true }, async functio
   await Test.findOne({});
 });
 
+schema.pre('save', function(next, opts: SaveOptions) {
+  console.log(opts.session);
+  next();
+});
+
 interface ITest extends Document {
   name?: string;
 }
@@ -40,7 +45,8 @@ schema.post<ITest>('save', function(err: Error, res: ITest, next: Function) {
 });
 
 schema.pre<Model<ITest>>('insertMany', function() {
-  return Promise.resolve(this.name);
+  const name: string = this.name;
+  return Promise.resolve();
 });
 
 schema.pre<Model<ITest>>('insertMany', { document: false, query: false }, function() {

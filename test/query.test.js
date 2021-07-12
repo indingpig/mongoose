@@ -1302,8 +1302,10 @@ describe('Query', function() {
         }
       });
       assert.deepEqual(options, {
-        w: 'majority',
-        j: true
+        writeConcern: {
+          w: 'majority',
+          j: true
+        }
       });
       done();
     });
@@ -2402,28 +2404,15 @@ describe('Query', function() {
       });
 
       it('throw on sync exceptions in callbacks (gh-6178)', function(done) {
-        const async = require('async');
         const schema = new Schema({});
         const Test = db.model('Test', schema);
 
         process.once('uncaughtException', err => {
-          assert.equal(err.message, 'woops');
+          assert.equal(err.message, 'Oops!');
           done();
         });
 
-        async.waterfall([
-          function(cb) {
-            Test.create({}, cb);
-          },
-          function(res, cb) {
-            Test.find({}, function() { cb(); });
-          },
-          function() {
-            throw new Error('woops');
-          }
-        ], function() {
-          assert.ok(false);
-        });
+        Test.find({}, function() { throw new Error('Oops!'); });
       });
     });
 
@@ -3787,5 +3776,42 @@ describe('Query', function() {
     q.writeConcern({ w: 'majority', wtimeout: 1000 });
 
     assert.deepEqual(q.options.writeConcern, { w: 'majority', wtimeout: 1000 });
+  });
+  it('no longer has the deprecation warning message with writeConcern gh-10083', function() {
+    const MySchema = new mongoose.Schema(
+      {
+        _id: { type: Number, required: true },
+        op: { type: String, required: true },
+        size: { type: Number, required: true },
+        totalSize: { type: Number, required: true }
+      },
+      {
+        versionKey: false,
+        writeConcern: {
+          w: 'majority',
+          j: true,
+          wtimeout: 15000
+        }
+      }
+    );
+    const Test = db.model('Test', MySchema); // pops up on creation of model
+    return co(function*() {
+      const entry = yield Test.create({ _id: 12345678, op: 'help', size: 54, totalSize: 104 });
+      yield entry.save();
+    });
+  });
+
+  it('sanitizeProjection option (gh-10243)', function() {
+    const MySchema = Schema({ name: String, email: String });
+    const Test = db.model('Test', MySchema);
+
+    let q = Test.find().select({ email: '$name' });
+    assert.deepEqual(q._fields, { email: '$name' });
+
+    q = Test.find().setOptions({ sanitizeProjection: true }).select({ email: '$name' });
+    assert.deepEqual(q._fields, { email: 1 });
+
+    q = Test.find().select({ email: '$name' }).setOptions({ sanitizeProjection: true });
+    assert.deepEqual(q._fields, { email: 1 });
   });
 });
