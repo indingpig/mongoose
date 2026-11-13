@@ -4,7 +4,6 @@ const start = require('./common');
 
 const Query = require('../lib/query');
 const assert = require('assert');
-const co = require('co');
 
 const mongoose = start.mongoose;
 const Schema = mongoose.Schema;
@@ -20,8 +19,8 @@ describe('Query:', function() {
       db = start();
     });
 
-    after(function(done) {
-      db.close(done);
+    after(async function() {
+      await db.close();
     });
 
     before(function() {
@@ -41,15 +40,14 @@ describe('Query:', function() {
       Product = db.model('Product', Product);
     });
 
-    it('creates a query', function(done) {
+    it('creates a query', function() {
       const prodQ = Product.find({ title: /test/ }).toConstructor();
 
       assert.ok(prodQ() instanceof Query);
-      done();
     });
 
-    it('copies all the right values', function(done) {
-      const prodQ = Product.update({ title: /test/ }, { title: 'blah' });
+    it('copies all the right values', function() {
+      const prodQ = Product.updateOne({ title: /test/ }, { title: 'blah' });
 
       const prodC = prodQ.toConstructor();
 
@@ -62,49 +60,35 @@ describe('Query:', function() {
       assert.deepEqual(prodQ.model, prodC().model);
       assert.deepEqual(prodQ.mongooseCollection, prodC().mongooseCollection);
       assert.deepEqual(prodQ._mongooseOptions, prodC()._mongooseOptions);
-      done();
     });
 
-    it('gets expected results', function(done) {
-      Product.create({ title: 'this is a test' }, function(err, p) {
-        assert.ifError(err);
-        const prodC = Product.find({ title: /test/ }).toConstructor();
+    it('gets expected results', async function() {
+      const p = await Product.create({ title: 'this is a test' });
+      const prodC = Product.find({ title: /test/ }).toConstructor();
 
-        prodC().exec(function(err, results) {
-          assert.ifError(err);
-          assert.equal(results.length, 1);
-          assert.equal(p.title, results[0].title);
-          done();
-        });
-      });
+      const results = await prodC().exec();
+      assert.equal(results.length, 1);
+      assert.equal(p.title, results[0].title);
     });
 
-    it('can be re-used multiple times', function(done) {
-      Product.create([{ title: 'moar thing' }, { title: 'second thing' }], function(err, prods) {
-        assert.ifError(err);
-        assert.equal(prods.length, 2);
-        const prod = prods[0];
-        const prodC = Product.find({ title: /thing/ }).toConstructor();
+    it('can be re-used multiple times', async function() {
+      const prods = await Product.create([{ title: 'moar thing' }, { title: 'second thing' }]);
+      assert.equal(prods.length, 2);
+      const prod = prods[0];
+      const prodC = Product.find({ title: /thing/ }).toConstructor();
 
-        prodC().exec(function(err, results) {
-          assert.ifError(err);
+      const results = await prodC().exec();
 
-          assert.equal(results.length, 2);
-          prodC().find({ _id: prod.id }).exec(function(err, res) {
-            assert.ifError(err);
-            assert.equal(res.length, 1);
+      assert.equal(results.length, 2);
+      let res = await prodC().find({ _id: prod.id }).exec();
+      assert.equal(res.length, 1);
 
-            prodC().exec(function(err, res) {
-              assert.ifError(err);
-              assert.equal(res.length, 2);
-              done();
-            });
-          });
-        });
-      });
+      res = await prodC().exec();
+      assert.equal(res.length, 2);
+
     });
 
-    it('options get merged properly', function(done) {
+    it('options get merged properly', function() {
       let prodC = Product.find({ title: /blah/ }).setOptions({ sort: 'title', lean: true });
       prodC = prodC.toConstructor();
 
@@ -114,10 +98,9 @@ describe('Query:', function() {
         sort: { title: 1 },
         limit: 3
       });
-      done();
     });
 
-    it('options get cloned (gh-3176)', function(done) {
+    it('options get cloned (gh-3176)', function() {
       let prodC = Product.find({ title: /blah/ }).setOptions({ sort: 'title', lean: true });
       prodC = prodC.toConstructor();
 
@@ -130,18 +113,16 @@ describe('Query:', function() {
       const nq2 = prodC(null, { limit: 5 });
       assert.deepEqual(nq._mongooseOptions, { lean: true, limit: 3 });
       assert.deepEqual(nq2._mongooseOptions, { lean: true, limit: 5 });
-
-      done();
     });
 
-    it('creates subclasses of mquery', function(done) {
-      const opts = { safe: { w: 'majority' }, readPreference: 'p' };
+    it('creates subclasses of mquery', function() {
+      const opts = { w: 'majority', readPreference: 'p' };
       const match = { title: 'test', count: { $gt: 101 } };
       const select = { name: 1, count: 0 };
       const update = { $set: { title: 'thing' } };
       const path = 'title';
 
-      const q = Product.update(match, update);
+      const q = Product.updateOne(match, update);
       q.select(select);
       q.where(path);
       q.setOptions(opts);
@@ -157,10 +138,9 @@ describe('Query:', function() {
       assert.deepEqual(update, m._update);
       assert.equal(path, m._path);
       assert.equal('find', m.op);
-      done();
     });
 
-    it('with findOneAndUpdate (gh-4318)', function(done) {
+    it('with findOneAndUpdate (gh-4318)', async function() {
       const Q = Product.where({ title: 'test' }).toConstructor();
 
       const query = { 'tags.test': 1 };
@@ -168,13 +148,10 @@ describe('Query:', function() {
         strings: ['123'],
         numbers: [1, 2, 3]
       };
-      Q().findOneAndUpdate(query, update, function(error) {
-        assert.ifError(error);
-        done();
-      });
+      await Q().findOneAndUpdate(query, update);
     });
 
-    it('gets middleware from model (gh-6455)', function() {
+    it('gets middleware from model (gh-6455)', async function() {
       let called = 0;
       const schema = new Schema({
         name: String
@@ -185,15 +162,32 @@ describe('Query:', function() {
       });
 
       const Test = db.model('Test', schema);
+      await Test.init();
+      await Test.deleteMany({});
       const test = new Test({ name: 'Romero' });
       const Q = Test.findOne({}).toConstructor();
 
-      return co(function*() {
-        yield test.save();
-        const doc = yield Q();
-        assert.strictEqual(doc.name, 'Romero');
-        assert.strictEqual(called, 1);
-      });
+      await test.save();
+      const doc = await Q();
+      assert.strictEqual(doc.name, 'Romero');
+      assert.strictEqual(called, 1);
+    });
+
+    it('does not share populate options between instances', async function() {
+      const Publisher = db.model('Publisher', new Schema({ name: String }));
+      const Author = db.model('Author', new Schema({ name: String, publisher: { type: 'ObjectId', ref: 'Publisher' } }));
+      const Article = db.model('Article', new Schema({ author: { type: 'ObjectId', ref: 'Author' } }));
+      const publisher = await Publisher.create({ name: 'Acme Books' });
+      const author = await Author.create({ name: 'Alice', publisher: publisher._id });
+      const article = await Article.create({ author: author._id });
+      const ArticleQuery = Article.find({ _id: article._id }).
+        populate({ path: 'author', populate: { path: 'publisher' } }).
+        toConstructor();
+
+      await ArticleQuery().lean();
+      const articles = await ArticleQuery();
+
+      assert.ok(articles[0].author.publisher instanceof mongoose.Document);
     });
 
     it('works with entries-style sort() syntax (gh-8159)', function() {
@@ -203,7 +197,7 @@ describe('Query:', function() {
       const query = Model.find().sort([['name', 1]]);
       const Query = query.toConstructor();
       const q = new Query();
-      assert.deepEqual(q.options.sort, [['name', 1]]);
+      assert.deepEqual(q.options.sort, { name: 1 });
     });
   });
 });

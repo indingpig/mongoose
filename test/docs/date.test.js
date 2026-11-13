@@ -1,12 +1,10 @@
 'use strict';
 
 const assert = require('assert');
-const co = require('co');
 const start = require('../common');
 
 describe('Date Tutorial', function() {
   let User;
-  // let db;
 
   const mongoose = new start.mongoose.Mongoose();
 
@@ -18,9 +16,11 @@ describe('Date Tutorial', function() {
     });
     User = mongoose.model('User', userSchema);
 
-    return mongoose.connect('mongodb://localhost:27017/mongoose', {
-      useNewUrlParser: true
-    });
+    return mongoose.connect(start.uri);
+  });
+
+  after(async() => {
+    await mongoose.disconnect();
   });
 
   it('Example 1.2: casts strings to dates', function() {
@@ -86,52 +86,44 @@ describe('Date Tutorial', function() {
 
   describe('Example 1.3.1', function() {
     let Episode;
-    let db;
 
-    before(function() {
-      return co(function*() {
-        const episodeSchema = new mongoose.Schema({
-          title: String,
-          airedAt: {
-            type: Date,
-            // The dates of the first and last episodes of
-            // Star Trek: The Next Generation
-            min: '1987-09-28',
-            max: '1994-05-23'
-          }
-        });
-        db = yield start();
-        Episode = db.model('Episode', episodeSchema);
-
-        yield Episode.create([
-          { title: 'Encounter at Farpoint', airedAt: '1987-09-28' },
-          { title: 'The Last Outpost', airedAt: '1987-10-19' },
-          { title: 'Where No One Has Gone Before', airedAt: '1987-10-26' }
-        ]);
+    before(async function() {
+      const episodeSchema = new mongoose.Schema({
+        title: String,
+        airedAt: {
+          type: Date,
+          // The dates of the first and last episodes of
+          // Star Trek: The Next Generation
+          min: '1987-09-28',
+          max: '1994-05-23'
+        }
       });
+      Episode = mongoose.model('Episode2', episodeSchema);
+
+      await Episode.create([
+        { title: 'Encounter at Farpoint', airedAt: '1987-09-28' },
+        { title: 'The Last Outpost', airedAt: '1987-10-19' },
+        { title: 'Where No One Has Gone Before', airedAt: '1987-10-26' }
+      ]);
     });
 
-    it('date queries', function() {
+    it('date queries', async function() {
       // Find episodes that aired on this exact date
-      return Episode.find({ airedAt: new Date('1987-10-26') }).
-        then(episodes => {
-          episodes[0].title; // "Where No One Has Gone Before"
-          // acquit:ignore:start
-          assert.equal(episodes[0].title, 'Where No One Has Gone Before');
-          // acquit:ignore:end
-          // Find episodes within a range of dates, sorted by date ascending
-          return Episode.
-            find({ airedAt: { $gte: '1987-10-19', $lte: '1987-10-26' } }).
-            sort({ airedAt: 1 });
-        }).
-        then(episodes => {
-          episodes[0].title; // "The Last Outpost"
-          episodes[1].title; // "Where No One Has Gone Before"
-          // acquit:ignore:start
-          assert.equal(episodes[0].title, 'The Last Outpost');
-          assert.equal(episodes[1].title, 'Where No One Has Gone Before');
-          // acquit:ignore:end
-        });
+      const episodes = await Episode.find({ airedAt: new Date('1987-10-26') });
+      episodes[0].title; // "Where No One Has Gone Before"
+      // acquit:ignore:start
+      assert.equal(episodes[0].title, 'Where No One Has Gone Before');
+      // acquit:ignore:end
+      // Find episodes within a range of dates, sorted by date ascending
+      const sortedEpisodes = await Episode.
+        find({ airedAt: { $gte: '1987-10-19', $lte: '1987-10-26' } }).
+        sort({ airedAt: 1 });
+      sortedEpisodes[0].title; // "The Last Outpost"
+      sortedEpisodes[1].title; // "Where No One Has Gone Before"
+      // acquit:ignore:start
+      assert.equal(sortedEpisodes[0].title, 'The Last Outpost');
+      assert.equal(sortedEpisodes[1].title, 'Where No One Has Gone Before');
+      // acquit:ignore:end
     });
   });
 

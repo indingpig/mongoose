@@ -4,10 +4,13 @@
 
 'use strict';
 
+const { once } = require('events');
+const { Writable } = require('stream');
+const { pipeline } = require('stream/promises');
 const start = require('./common');
 
 const assert = require('assert');
-const co = require('co');
+const sinon = require('sinon');
 
 const mongoose = start.mongoose;
 const Schema = mongoose.Schema;
@@ -20,39 +23,25 @@ describe('QueryCursor', function() {
     db = start();
   });
 
-  after(function(done) {
-    db.close(done);
+  after(async function() {
+    await db.close();
   });
 
   beforeEach(() => db.deleteModel(/.*/));
   afterEach(() => require('./util').clearTestData(db));
   afterEach(() => require('./util').stopRemainingOps(db));
 
-  beforeEach(function() {
+  beforeEach(async function() {
     const schema = new Schema({ name: String });
     schema.virtual('test').get(function() { return 'test'; });
 
     Model = db.model('Test', schema);
 
-    return Model.create({ name: 'Axl' }, { name: 'Slash' });
+    await Model.deleteMany({});
+    await Model.create({ name: 'Axl' }, { name: 'Slash' });
   });
 
   describe('#next()', function() {
-    it('with callbacks', function(done) {
-      const cursor = Model.find().sort({ name: 1 }).cursor();
-      cursor.next(function(error, doc) {
-        assert.ifError(error);
-        assert.equal(doc.name, 'Axl');
-        assert.equal(doc.test, 'test');
-        cursor.next(function(error, doc) {
-          assert.ifError(error);
-          assert.equal(doc.name, 'Slash');
-          assert.equal(doc.test, 'test');
-          done();
-        });
-      });
-    });
-
     it('with promises', function(done) {
       const cursor = Model.find().sort({ name: 1 }).cursor();
       cursor.next().then(function(doc) {
@@ -66,20 +55,15 @@ describe('QueryCursor', function() {
       });
     });
 
-    it('with limit (gh-4266)', function(done) {
+    it('with limit (gh-4266)', async function() {
       const cursor = Model.find().limit(1).sort({ name: 1 }).cursor();
-      cursor.next(function(error, doc) {
-        assert.ifError(error);
-        assert.equal(doc.name, 'Axl');
-        cursor.next(function(error, doc) {
-          assert.ifError(error);
-          assert.ok(!doc);
-          done();
-        });
-      });
+      const doc = await cursor.next();
+      assert.equal(doc.name, 'Axl');
+      const doc2 = await cursor.next();
+      assert.ok(!doc2);
     });
 
-    it('with projection', function(done) {
+    it('with projection', async function() {
       const personSchema = new Schema({
         name: String,
         born: String
@@ -89,26 +73,21 @@ describe('QueryCursor', function() {
         { name: 'Axl Rose', born: 'William Bruce Rose' },
         { name: 'Slash', born: 'Saul Hudson' }
       ];
-      Person.create(people, function(error) {
-        assert.ifError(error);
-        const cursor = Person.find({}, { _id: 0, name: 1 }).sort({ name: 1 }).cursor();
-        cursor.next(function(error, doc) {
-          assert.ifError(error);
-          assert.equal(doc._id, undefined);
-          assert.equal(doc.name, 'Axl Rose');
-          assert.equal(doc.born, undefined);
-          cursor.next(function(error, doc) {
-            assert.ifError(error);
-            assert.equal(doc._id, undefined);
-            assert.equal(doc.name, 'Slash');
-            assert.equal(doc.born, undefined);
-            done();
-          });
-        });
-      });
+      await Person.create(people);
+      const cursor = Person.find({}, { _id: 0, name: 1 }).sort({ name: 1 }).cursor();
+      const doc1 = await cursor.next();
+      assert.equal(doc1._id, undefined);
+      assert.equal(doc1.name, 'Axl Rose');
+      assert.equal(doc1.born, undefined);
+      const doc2 = await cursor.next();
+      assert.equal(doc2._id, undefined);
+      assert.equal(doc2.name, 'Slash');
+      assert.equal(doc2.born, undefined);
     });
 
     describe('with populate', function() {
+      let populateCalls = 0;
+
       const bandSchema = new Schema({
         name: String,
         members: [{ type: mongoose.Schema.ObjectId, ref: 'Person' }]
@@ -116,10 +95,11 @@ describe('QueryCursor', function() {
       const personSchema = new Schema({
         name: String
       });
+      personSchema.pre('find', () => { ++populateCalls; });
 
       let Band;
 
-      beforeEach(function(done) {
+      beforeEach(async function() {
         const Person = db.model('Person', personSchema);
         Band = db.model('Band', bandSchema);
 
@@ -132,150 +112,119 @@ describe('QueryCursor', function() {
           { name: 'Thom Yorke' },
           { name: 'Billy Corgan' }
         ];
-        Person.create(people, function(error, docs) {
-          assert.ifError(error);
-          const bands = [
-            { name: 'Guns N\' Roses', members: [docs[0], docs[1]] },
-            { name: 'Motley Crue', members: [docs[2], docs[3]] },
-            { name: 'Nine Inch Nails', members: [docs[4]] },
-            { name: 'Radiohead', members: [docs[5]] },
-            { name: 'The Smashing Pumpkins', members: [docs[6]] }
-          ];
-          Band.create(bands, function(error) {
-            assert.ifError(error);
-            done();
-          });
-        });
+        const docs = await Person.create(people);
+
+        const bands = [
+          { name: 'Guns N\' Roses', members: [docs[0], docs[1]] },
+          { name: 'Motley Crue', members: [docs[2], docs[3]] },
+          { name: 'Nine Inch Nails', members: [docs[4]] },
+          { name: 'Radiohead', members: [docs[5]] },
+          { name: 'The Smashing Pumpkins', members: [docs[6]] }
+        ];
+        await Band.create(bands);
       });
 
-      it('with populate without specify batchSize', function(done) {
-        const cursor =
-          Band.find().sort({ name: 1 }).populate('members').cursor();
-        cursor.next(function(error, doc) {
-          assert.ifError(error);
-          assert.equal(cursor.cursor.cursorState.currentLimit, 1);
-          assert.equal(doc.name, 'Guns N\' Roses');
-          assert.equal(doc.members.length, 2);
-          assert.equal(doc.members[0].name, 'Axl Rose');
-          assert.equal(doc.members[1].name, 'Slash');
-          cursor.next(function(error, doc) {
-            assert.ifError(error);
-            assert.equal(cursor.cursor.cursorState.currentLimit, 2);
-            assert.equal(doc.name, 'Motley Crue');
-            assert.equal(doc.members.length, 2);
-            assert.equal(doc.members[0].name, 'Nikki Sixx');
-            assert.equal(doc.members[1].name, 'Vince Neil');
-            cursor.next(function(error, doc) {
-              assert.ifError(error);
-              assert.equal(cursor.cursor.cursorState.currentLimit, 3);
-              assert.equal(doc.name, 'Nine Inch Nails');
-              assert.equal(doc.members.length, 1);
-              assert.equal(doc.members[0].name, 'Trent Reznor');
-              cursor.next(function(error, doc) {
-                assert.ifError(error);
-                assert.equal(cursor.cursor.cursorState.currentLimit, 4);
-                assert.equal(doc.name, 'Radiohead');
-                assert.equal(doc.members.length, 1);
-                assert.equal(doc.members[0].name, 'Thom Yorke');
-                cursor.next(function(error, doc) {
-                  assert.ifError(error);
-                  assert.equal(cursor.cursor.cursorState.currentLimit, 5);
-                  assert.equal(doc.name, 'The Smashing Pumpkins');
-                  assert.equal(doc.members.length, 1);
-                  assert.equal(doc.members[0].name, 'Billy Corgan');
-                  done();
-                });
-              });
-            });
-          });
-        });
+      it('with populate without specify batchSize', async function() {
+        const cursor = Band.find().sort({ name: 1 }).populate('members').cursor();
+
+        let doc = await cursor.next();
+        assert.equal(doc.name, 'Guns N\' Roses');
+        assert.equal(doc.members.length, 2);
+        assert.equal(doc.members[0].name, 'Axl Rose');
+        assert.equal(doc.members[1].name, 'Slash');
+
+        doc = await cursor.next();
+        assert.equal(doc.name, 'Motley Crue');
+        assert.equal(doc.members.length, 2);
+        assert.equal(doc.members[0].name, 'Nikki Sixx');
+        assert.equal(doc.members[1].name, 'Vince Neil');
+
+        doc = await cursor.next();
+        assert.equal(doc.name, 'Nine Inch Nails');
+        assert.equal(doc.members.length, 1);
+        assert.equal(doc.members[0].name, 'Trent Reznor');
+
+        doc = await cursor.next();
+        assert.equal(doc.name, 'Radiohead');
+        assert.equal(doc.members.length, 1);
+        assert.equal(doc.members[0].name, 'Thom Yorke');
+
+        doc = await cursor.next();
+        assert.equal(doc.name, 'The Smashing Pumpkins');
+        assert.equal(doc.members.length, 1);
+        assert.equal(doc.members[0].name, 'Billy Corgan');
       });
 
-      it('with populate using custom batchSize', function(done) {
+      it('with populate using custom batchSize', async function() {
+        populateCalls = 0;
         const cursor =
           Band.find().sort({ name: 1 }).populate('members').batchSize(3).cursor();
-        cursor.next(function(error, doc) {
-          assert.ifError(error);
-          assert.equal(cursor.cursor.cursorState.currentLimit, 3);
-          assert.equal(doc.name, 'Guns N\' Roses');
-          assert.equal(doc.members.length, 2);
-          assert.equal(doc.members[0].name, 'Axl Rose');
-          assert.equal(doc.members[1].name, 'Slash');
-          cursor.next(function(error, doc) {
-            assert.ifError(error);
-            assert.equal(cursor.cursor.cursorState.currentLimit, 3);
-            assert.equal(doc.name, 'Motley Crue');
-            assert.equal(doc.members.length, 2);
-            assert.equal(doc.members[0].name, 'Nikki Sixx');
-            assert.equal(doc.members[1].name, 'Vince Neil');
-            cursor.next(function(error, doc) {
-              assert.ifError(error);
-              assert.equal(cursor.cursor.cursorState.currentLimit, 3);
-              assert.equal(doc.name, 'Nine Inch Nails');
-              assert.equal(doc.members.length, 1);
-              assert.equal(doc.members[0].name, 'Trent Reznor');
-              cursor.next(function(error, doc) {
-                assert.ifError(error);
-                assert.equal(cursor.cursor.cursorState.currentLimit, 5);
-                assert.equal(doc.name, 'Radiohead');
-                assert.equal(doc.members.length, 1);
-                assert.equal(doc.members[0].name, 'Thom Yorke');
-                cursor.next(function(error, doc) {
-                  assert.ifError(error);
-                  assert.equal(cursor.cursor.cursorState.currentLimit, 5);
-                  assert.equal(doc.name, 'The Smashing Pumpkins');
-                  assert.equal(doc.members.length, 1);
-                  assert.equal(doc.members[0].name, 'Billy Corgan');
-                  done();
-                });
-              });
-            });
-          });
-        });
+
+        let doc = await cursor.next();
+        assert.equal(doc.name, 'Guns N\' Roses');
+        assert.equal(doc.members.length, 2);
+        assert.equal(doc.members[0].name, 'Axl Rose');
+        assert.equal(doc.members[1].name, 'Slash');
+
+        doc = await cursor.next();
+        assert.equal(doc.name, 'Motley Crue');
+        assert.equal(doc.members.length, 2);
+        assert.equal(doc.members[0].name, 'Nikki Sixx');
+        assert.equal(doc.members[1].name, 'Vince Neil');
+
+        doc = await cursor.next();
+        assert.equal(doc.name, 'Nine Inch Nails');
+        assert.equal(doc.members.length, 1);
+        assert.equal(doc.members[0].name, 'Trent Reznor');
+
+        doc = await cursor.next();
+        assert.equal(doc.members.length, 1);
+        assert.equal(doc.members[0].name, 'Thom Yorke');
+
+        doc = await cursor.next();
+        assert.equal(doc.name, 'The Smashing Pumpkins');
+        assert.equal(doc.members.length, 1);
+        assert.equal(doc.members[0].name, 'Billy Corgan');
+
+        assert.equal(populateCalls, 2);
       });
     });
 
-    it('casting ObjectIds with where() (gh-4355)', function(done) {
-      Model.findOne(function(error, doc) {
-        assert.ifError(error);
-        assert.ok(doc);
-        const query = { _id: doc._id.toHexString() };
-        Model.find().where(query).cursor().next(function(error, doc) {
-          assert.ifError(error);
-          assert.ok(doc);
-          done();
-        });
-      });
+    it('casting ObjectIds with where() (gh-4355)', async function() {
+      let doc = await Model.findOne();
+      assert.ok(doc);
+      const query = { _id: doc._id.toHexString() };
+      doc = await Model.find().where(query).cursor().next();
+      assert.ok(doc);
     });
 
-    it('cast errors (gh-4355)', function(done) {
-      Model.find().where({ _id: 'BadId' }).cursor().next(function(error) {
+    it('cast errors (gh-4355)', async function() {
+      try {
+        await Model.find().where({ _id: 'BadId' }).cursor().next();
+        assert.ok(false);
+      } catch (error) {
         assert.ok(error);
         assert.equal(error.name, 'CastError');
         assert.equal(error.path, '_id');
-        done();
-      });
+      }
     });
 
-    it('with pre-find hooks (gh-5096)', function() {
+    it('with pre-find hooks (gh-5096)', async function() {
       const schema = new Schema({ name: String });
       let called = 0;
-      schema.pre('find', function(next) {
+      schema.pre('find', function() {
         ++called;
-        next();
       });
 
       db.deleteModel(/Test/);
       const Model = db.model('Test', schema);
 
-      return co(function*() {
-        yield Model.deleteMany({});
-        yield Model.create({ name: 'Test' });
+      await Model.deleteMany({});
+      await Model.create({ name: 'Test' });
 
-        const doc = yield Model.find().cursor().next();
-        assert.equal(called, 1);
-        assert.equal(doc.name, 'Test');
-      });
+      const doc = await Model.find().cursor().next();
+      assert.equal(called, 1);
+      assert.equal(doc.name, 'Test');
     });
   });
 
@@ -355,24 +304,20 @@ describe('QueryCursor', function() {
       });
     });
 
-    it('with #next', function(done) {
+    it('with #next', async function() {
       const cursor = Model.find().sort({ name: 1 }).cursor()
         .map(function(obj) {
           obj.name += '_next';
           return obj;
         });
 
-      cursor.next(function(error, doc) {
-        assert.ifError(error);
-        assert.equal(doc.name, 'Axl_next');
-        assert.equal(doc.test, 'test');
-        cursor.next(function(error, doc) {
-          assert.ifError(error);
-          assert.equal(doc.name, 'Slash_next');
-          assert.equal(doc.test, 'test');
-          done();
-        });
-      });
+      const doc = await cursor.next();
+      assert.equal(doc.name, 'Axl_next');
+      assert.equal(doc.test, 'test');
+
+      const doc2 = await cursor.next();
+      assert.equal(doc2.name, 'Slash_next');
+      assert.equal(doc2.test, 'test');
     });
   });
 
@@ -447,77 +392,56 @@ describe('QueryCursor', function() {
       });
     });
 
-    it('lean = false (gh-7197)', function() {
+    it('lean = false (gh-7197)', async function() {
       const cursor = Model.find().sort({ name: 1 }).lean(false).cursor();
 
-      return co(function*() {
-        const doc = yield cursor.next();
-        assert.ok(doc instanceof mongoose.Document);
-      });
+      const doc = await cursor.next();
+      assert.ok(doc instanceof mongoose.Document);
     });
   });
 
   describe('#close()', function() {
-    it('works (gh-4258)', function(done) {
+    it('works (gh-4258)', async function() {
       const cursor = Model.find().sort({ name: 1 }).cursor();
-      cursor.next(function(error, doc) {
-        assert.ifError(error);
-        assert.equal(doc.name, 'Axl');
-        assert.equal(doc.test, 'test');
+      const doc = await cursor.next();
+      assert.equal(doc.name, 'Axl');
+      assert.equal(doc.test, 'test');
 
-        let closed = false;
-        cursor.on('close', function() {
-          closed = true;
-        });
-
-        cursor.close(function(error) {
-          assert.ifError(error);
-          assert.ok(closed);
-          cursor.next(function(error) {
-            assert.ok(error);
-            assert.equal(error.message, 'Cursor is closed');
-            done();
-          });
-        });
+      let closed = false;
+      cursor.on('close', function() {
+        closed = true;
       });
+
+      await cursor.close();
+      assert.ok(closed);
+      try {
+        await cursor.next();
+        assert.ok(false);
+      } catch (error) {
+        assert.equal(error.name, 'MongooseError');
+        assert.ok(error.message.includes('closed cursor'), error.message);
+      }
     });
   });
 
-  it('handles non-boolean lean option (gh-7137)', function() {
+  it('handles non-boolean lean option (gh-7137)', async function() {
     const schema = new Schema({ name: String });
     db.deleteModel(/Test/);
     const Model = db.model('Test', schema);
 
-    return co(function*() {
-      yield Model.deleteMany({});
-      yield Model.create({ name: 'test' });
+    await Model.deleteMany({});
+    await Model.create({ name: 'test' });
 
-      let doc;
-      yield Model.find().lean({ virtuals: true }).cursor().eachAsync(_doc => {
-        assert.ok(!doc);
-        doc = _doc;
-      });
-
-      assert.ok(!doc.$__);
+    let doc;
+    await Model.find().lean({ virtuals: true }).cursor().eachAsync(_doc => {
+      assert.ok(!doc);
+      doc = _doc;
     });
+
+    assert.ok(!doc.$__);
   });
 
-  it('addCursorFlag (gh-4814)', function(done) {
-    const userSchema = new mongoose.Schema({
-      name: String
-    });
-
-    const User = db.model('User', userSchema);
-
-    const cursor = User.find().cursor().addCursorFlag('noCursorTimeout', true);
-
-    cursor.on('cursor', function() {
-      assert.equal(cursor.cursor.cursorState.cmd.noCursorTimeout, true);
-      done();
-    });
-  });
-
-  it('data before close (gh-4998)', function(done) {
+  it('data before close (gh-4998)', async function() {
     const userSchema = new mongoose.Schema({
       name: String
     });
@@ -526,91 +450,104 @@ describe('QueryCursor', function() {
     const users = [];
     for (let i = 0; i < 100; i++) {
       users.push({
-        _id: mongoose.Types.ObjectId(),
+        _id: new mongoose.Types.ObjectId(),
         name: 'Bob' + (i < 10 ? '0' : '') + i
       });
     }
 
-    User.insertMany(users, function(error) {
-      assert.ifError(error);
+    await User.insertMany(users);
 
-      const stream = User.find({}).cursor();
-      const docs = [];
+    const stream = User.find({}).cursor();
+    const docs = [];
 
-      stream.on('data', function(doc) {
-        docs.push(doc);
-      });
-
-      stream.on('close', function() {
-        assert.equal(docs.length, 100);
-        done();
-      });
+    stream.on('data', function(doc) {
+      docs.push(doc);
     });
+
+    await new Promise(resolve => {
+      stream.on('close', resolve);
+    });
+    assert.equal(docs.length, 100);
   });
 
-  it('batchSize option (gh-8039)', function() {
-    const User = db.model('gh8039', Schema({ name: String }));
-    let cursor = User.find().cursor({ batchSize: 2000 });
-
-    return new Promise(resolve => cursor.once('cursor', () => resolve())).
-      then(() => assert.equal(cursor.cursor.cursorState.batchSize, 2000)).
-      then(() => {
-        cursor = User.find().batchSize(2001).cursor();
-      }).
-      then(() => new Promise(resolve => cursor.once('cursor', () => resolve()))).
-      then(() => {
-        assert.equal(cursor.cursor.cursorState.batchSize, 2001);
-      });
-  });
-
-  it('pulls schema-level readPreference (gh-8421)', function() {
+  it('pulls schema-level readPreference (gh-8421)', async function() {
     const read = 'secondaryPreferred';
     const User = db.model('User', Schema({ name: String }, { read }));
     const cursor = User.find().cursor();
 
-    assert.equal(cursor.options.readPreference.mode, read);
+    await new Promise(resolve => cursor.once('cursor', resolve));
+
+    assert.equal(cursor.options.readPreference, read);
   });
 
-  it('eachAsync() with parallel > numDocs (gh-8422)', function() {
+  it('preserves options object identity after opening the cursor', async function() {
+    // Arrange
+    const userSchema = new Schema({ name: String });
+    const User = db.model('User', userSchema);
+    const cursor = User.find().cursor({ batchSize: 1 });
+    const options = cursor.options;
+
+    // Act
+    await once(cursor, 'cursor');
+    await cursor.close();
+
+    // Assert
+    assert.strictEqual(cursor.options, options);
+  });
+
+  it('strips middleware added to options before opening the cursor', async function() {
+    // Arrange
+    let continuePreHook;
+    const preHookPromise = new Promise(resolve => { continuePreHook = resolve; });
+    const userSchema = new Schema({ name: String });
+    userSchema.pre('find', () => preHookPromise);
+    const User = db.model('User', userSchema);
+    const cursor = User.find().cursor();
+    const cursorOpened = once(cursor, 'cursor');
+    cursor.options.middleware = false;
+
+    // Act
+    continuePreHook();
+    await cursorOpened;
+    await cursor.close();
+
+    // Assert
+    assert.ok(!Object.hasOwn(cursor.options, 'middleware'));
+  });
+
+  it('eachAsync() with parallel > numDocs (gh-8422)', async function() {
     const schema = new mongoose.Schema({ name: String });
     const Movie = db.model('Movie', schema);
 
-    return co(function*() {
-      yield Movie.deleteMany({});
-      yield Movie.create([
-        { name: 'Kickboxer' },
-        { name: 'Ip Man' },
-        { name: 'Enter the Dragon' }
-      ]);
+    await Movie.deleteMany({});
+    await Movie.create([
+      { name: 'Kickboxer' },
+      { name: 'Ip Man' },
+      { name: 'Enter the Dragon' }
+    ]);
 
-      let numDone = 0;
+    let numDone = 0;
 
-      const test = co.wrap(function*() {
-        yield new Promise((resolve) => setTimeout(resolve, 100));
-        ++numDone;
-      });
-
-      yield Movie.find().cursor().eachAsync(test, { parallel: 4 });
-      assert.equal(numDone, 3);
-    });
+    await Movie.find().cursor().eachAsync(async function() {
+      await delay(100);
+      ++numDone;
+    }, { parallel: 4 });
+    assert.equal(numDone, 3);
   });
 
-  it('eachAsync() with sort, parallel, and sync function (gh-8557)', function() {
+  it('eachAsync() with sort, parallel, and sync function (gh-8557)', async function() {
     const User = db.model('User', Schema({ order: Number }));
 
-    return co(function*() {
-      yield User.create([{ order: 1 }, { order: 2 }, { order: 3 }]);
+    await User.create([{ order: 1 }, { order: 2 }, { order: 3 }]);
 
-      const cursor = User.aggregate([{ $sort: { order: 1 } }]).
-        cursor().
-        exec();
+    const cursor = User.aggregate([{ $sort: { order: 1 } }]).
+      cursor();
 
-      const docs = [];
+    const docs = [];
 
-      yield cursor.eachAsync((doc) => docs.push(doc), { parallel: 3 });
+    await cursor.eachAsync((doc) => docs.push(doc), { parallel: 3 });
 
-      assert.deepEqual(docs.map(d => d.order), [1, 2, 3]);
-    });
+    assert.deepEqual(docs.map(d => d.order), [1, 2, 3]);
   });
 
   it('closing query cursor emits `close` event only once (gh-8835)', function(done) {
@@ -621,7 +558,6 @@ describe('QueryCursor', function() {
 
     let closeEventTriggeredCount = 0;
     cursor.on('close', () => closeEventTriggeredCount++);
-
     setTimeout(() => {
       assert.equal(closeEventTriggeredCount, 1);
       done();
@@ -631,7 +567,7 @@ describe('QueryCursor', function() {
   it('closing aggregation cursor emits `close` event only once (gh-8835)', function(done) {
     const User = db.model('User', new Schema({ name: String }));
 
-    const cursor = User.aggregate([{ $match: {} }]).cursor().exec();
+    const cursor = User.aggregate([{ $match: {} }]).cursor();
     cursor.on('data', () => {});
 
     let closeEventTriggeredCount = 0;
@@ -641,74 +577,566 @@ describe('QueryCursor', function() {
     setTimeout(() => {
       assert.equal(closeEventTriggeredCount, 1);
       done();
-    }, 20);
+    }, 200);
   });
 
-  it('passes document index as the second argument for query cursor (gh-8972)', function() {
-    return co(function *() {
-      const User = db.model('User', Schema({ order: Number }));
+  it('closing query cursor emits `close` event only once with stream pause/resume (gh-10876)', function(done) {
+    const User = db.model('User', new Schema({ name: String }));
 
-      yield User.create([{ order: 1 }, { order: 2 }, { order: 3 }]);
+    User.create({ name: 'First' }, { name: 'Second' })
+      .then(() => {
+        const cursor = User.find().cursor();
+        cursor.on('data', () => {
+          cursor.pause();
+          setTimeout(() => cursor.resume(), 50);
+        });
 
-
-      const docsWithIndexes = [];
-
-      yield User.find().sort('order').cursor().eachAsync((doc, i) => {
-        docsWithIndexes.push({ order: doc.order, i: i });
+        let closeEventTriggeredCount = 0;
+        cursor.on('close', () => closeEventTriggeredCount++);
+        setTimeout(() => {
+          assert.equal(closeEventTriggeredCount, 1);
+          done();
+        }, 200);
       });
-
-      const expected = [
-        { order: 1, i: 0 },
-        { order: 2, i: 1 },
-        { order: 3, i: 2 }
-      ];
-
-      assert.deepEqual(docsWithIndexes, expected);
-    });
   });
 
-  it('passes document index as the second argument for aggregation cursor (gh-8972)', function() {
-    return co(function *() {
-      const User = db.model('User', Schema({ order: Number }));
+  it('closing aggregation cursor emits `close` event only once with stream pause/resume (gh-10876)', function(done) {
+    const User = db.model('User', new Schema({ name: String }));
 
-      yield User.create([{ order: 1 }, { order: 2 }, { order: 3 }]);
+    User.create({ name: 'First' }, { name: 'Second' })
+      .then(() => {
+        const cursor = User.aggregate([{ $match: {} }]).cursor();
+        cursor.on('data', () => {
+          cursor.pause();
+          setTimeout(() => cursor.resume(), 50);
+        });
 
+        let closeEventTriggeredCount = 0;
+        cursor.on('close', () => closeEventTriggeredCount++);
 
-      const docsWithIndexes = [];
-
-      yield User.aggregate([{ $sort: { order: 1 } }]).cursor().exec().eachAsync((doc, i) => {
-        docsWithIndexes.push({ order: doc.order, i: i });
+        setTimeout(() => {
+          assert.equal(closeEventTriggeredCount, 1);
+          done();
+        }, 200);
       });
-
-      const expected = [
-        { order: 1, i: 0 },
-        { order: 2, i: 1 },
-        { order: 3, i: 2 }
-      ];
-
-      assert.deepEqual(docsWithIndexes, expected);
-    });
   });
 
-  it('post hooks (gh-9435)', function() {
+  it('query cursor emit end event (gh-10902)', function(done) {
+    const User = db.model('User', new Schema({ name: String }));
+
+    User.create({ name: 'First' }, { name: 'Second' })
+      .then(() => {
+        const cursor = User.find({}).cursor();
+        cursor.on('data', () => {
+          cursor.pause();
+          setTimeout(() => cursor.resume(), 50);
+        });
+
+        let endEventTriggeredCount = 0;
+        cursor.on('end', () => endEventTriggeredCount++);
+
+        setTimeout(() => {
+          assert.equal(endEventTriggeredCount, 1);
+          done();
+        }, 200);
+      });
+  });
+
+  it('aggregate cursor emit end event (gh-10902)', function(done) {
+    const User = db.model('User', new Schema({ name: String }));
+
+    User.create({ name: 'First' }, { name: 'Second' })
+      .then(() => {
+        const cursor = User.aggregate([{ $match: {} }]).cursor();
+        cursor.on('data', () => {
+          cursor.pause();
+          setTimeout(() => cursor.resume(), 50);
+        });
+
+        let endEventTriggeredCount = 0;
+        cursor.on('end', () => endEventTriggeredCount++);
+
+        setTimeout(() => {
+          assert.equal(endEventTriggeredCount, 1);
+          done();
+        }, 200);
+      });
+  });
+
+  it('query cursor emit end event before close event (gh-10902)', function(done) {
+    const User = db.model('User', new Schema({ name: String }));
+
+    User.create({ name: 'First' }, { name: 'Second' })
+      .then(() => {
+        const cursor = User.find({}).cursor();
+        cursor.on('data', () => {
+          cursor.pause();
+          setTimeout(() => cursor.resume(), 50);
+        });
+
+        let endEventTriggeredCount = 0;
+        cursor.on('end', () => endEventTriggeredCount++);
+        cursor.on('close', () => {
+          assert.equal(endEventTriggeredCount, 1);
+          done();
+        });
+      });
+  });
+
+  it('aggregate cursor emit end event before close event (gh-10902)', function(done) {
+    const User = db.model('User', new Schema({ name: String }));
+
+    User.create({ name: 'First' }, { name: 'Second' })
+      .then(() => {
+        const cursor = User.aggregate([{ $match: {} }]).cursor();
+        cursor.on('data', () => {
+          cursor.pause();
+          setTimeout(() => cursor.resume(), 50);
+        });
+
+        let endEventTriggeredCount = 0;
+        cursor.on('end', () => endEventTriggeredCount++);
+        cursor.on('close', () => {
+          assert.equal(endEventTriggeredCount, 1);
+          done();
+        });
+      });
+  });
+
+  it('passes document index as the second argument for query cursor (gh-8972)', async function() {
+    const User = db.model('User', Schema({ order: Number }));
+
+    await User.create([{ order: 1 }, { order: 2 }, { order: 3 }]);
+
+    const docsWithIndexes = [];
+
+    await User.find().sort('order').cursor().eachAsync((doc, i) => {
+      docsWithIndexes.push({ order: doc.order, i: i });
+    });
+
+    const expected = [
+      { order: 1, i: 0 },
+      { order: 2, i: 1 },
+      { order: 3, i: 2 }
+    ];
+
+    assert.deepEqual(docsWithIndexes, expected);
+  });
+
+  it('passes document index as the second argument for aggregation cursor (gh-8972)', async function() {
+    const User = db.model('User', Schema({ order: Number }));
+
+    await User.create([{ order: 1 }, { order: 2 }, { order: 3 }]);
+
+
+    const docsWithIndexes = [];
+
+    await User.aggregate([{ $sort: { order: 1 } }]).cursor().eachAsync((doc, i) => {
+      docsWithIndexes.push({ order: doc.order, i: i });
+    });
+
+    const expected = [
+      { order: 1, i: 0 },
+      { order: 2, i: 1 },
+      { order: 3, i: 2 }
+    ];
+
+    assert.deepEqual(docsWithIndexes, expected);
+  });
+
+  it('post hooks (gh-9435)', async function() {
     const schema = new mongoose.Schema({ name: String });
+    const postHookDocs = [];
     schema.post('find', function(docs) {
+      postHookDocs.push(docs.map(doc => doc.name));
       docs.forEach(doc => { doc.name = doc.name.toUpperCase(); });
     });
     const Movie = db.model('Movie', schema);
 
-    return co(function*() {
-      yield Movie.deleteMany({});
-      yield Movie.create([
-        { name: 'Kickboxer' },
-        { name: 'Ip Man' },
-        { name: 'Enter the Dragon' }
-      ]);
+    await Movie.deleteMany({});
+    await Movie.create([
+      { name: 'Kickboxer' },
+      { name: 'Ip Man' },
+      { name: 'Enter the Dragon' }
+    ]);
 
-      const arr = [];
-      yield Movie.find().sort({ name: -1 }).cursor().
-        eachAsync(doc => arr.push(doc.name));
-      assert.deepEqual(arr, ['KICKBOXER', 'IP MAN', 'ENTER THE DRAGON']);
+    const arr = [];
+    await Movie.find().sort({ name: -1 }).cursor().
+      eachAsync(doc => arr.push(doc.name));
+
+    assert.deepEqual(postHookDocs, [['Kickboxer'], ['Ip Man'], ['Enter the Dragon']]);
+    assert.deepEqual(arr, ['KICKBOXER', 'IP MAN', 'ENTER THE DRAGON']);
+  });
+
+  it('reports CastError with noCursorTimeout set (gh-10150)', async function() {
+    const schema = new mongoose.Schema({ name: String });
+    const Movie = db.model('Movie', schema);
+
+    await Movie.deleteMany({});
+    await Movie.create([
+      { name: 'Kickboxer' },
+      { name: 'Ip Man' },
+      { name: 'Enter the Dragon' }
+    ]);
+
+    const arr = [];
+    const err = await Movie.find({ name: { lt: 'foo' } }).cursor().
+      addCursorFlag('noCursorTimeout', true).
+      eachAsync(doc => arr.push(doc.name)).
+      then(() => null, err => err);
+    assert.ok(err);
+    assert.equal(err.name, 'CastError');
+  });
+
+  it('reports error in pre save hook (gh-10785)', async function() {
+    const schema = new mongoose.Schema({ name: String });
+
+    schema.pre('find', async() => {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      throw new Error('Oops!');
     });
+
+    const Movie = db.model('Movie', schema);
+
+    await Movie.deleteMany({});
+    await Movie.create([
+      { name: 'Kickboxer' },
+      { name: 'Ip Man' },
+      { name: 'Enter the Dragon' }
+    ]);
+
+    const arr = [];
+    const err = await Movie.find({ name: { $lt: 'foo' } }).cursor().
+      eachAsync(doc => arr.push(doc.name)).
+      then(() => null, err => err);
+    assert.ok(err);
+    assert.equal(err.message, 'Oops!');
+  });
+
+  it('applies selected fields when using discriminators (gh-11130)', async function() {
+    const schemaOptions = { discriminatorKey: 'type' };
+    const schema = new Schema({
+      type: { type: String, enum: ['type1', 'type2'] },
+      foo: { type: String, default: 'foo' },
+      bar: { type: String }
+    }, schemaOptions);
+
+    const Example = db.model('Example', schema);
+
+    Example.discriminator('type1', Schema({ type1: String }, schemaOptions), 'type1');
+    Example.discriminator('type2', Schema({ type2: String }, schemaOptions), 'type2');
+
+    await Example.create({
+      type: 'type1',
+      foo: 'example1',
+      bar: 'example1',
+      type1: 'example1'
+    });
+    await Example.create({
+      type: 'type2',
+      foo: 'example2',
+      bar: 'example2',
+      type2: 'example2'
+    });
+
+    const cursor = Example.find().select('bar type');
+    const dirty = [];
+    for await (const doc of cursor) {
+      dirty.push(doc.$__dirty());
+      await doc.save();
+    }
+    assert.deepStrictEqual(dirty, [[], []]);
+
+    const docs = await Example.find().sort('foo');
+    assert.deepStrictEqual(docs.map(d => d.foo), ['example1', 'example2']);
+  });
+  it('should allow middleware to run before applying _optionsForExec() gh-13417', async function() {
+    const testSchema = new Schema({
+      a: Number,
+      b: Number,
+      c: Number
+    });
+    testSchema.pre('find', function() {
+      this.select('-c');
+    });
+    const Test = db.model('gh13417', testSchema);
+    await Test.create([{ a: 1, b: 1, c: 1 }, { a: 2, b: 2, c: 2 }]);
+    const cursorMiddleSelect = [];
+    let r;
+    const cursor = Test.find().select('-b').sort({ a: 1 }).cursor();
+    // eslint-disable-next-line no-cond-assign
+    while (r = await cursor.next()) {
+      cursorMiddleSelect.push(r);
+    }
+    assert.equal(typeof cursorMiddleSelect[0].b, 'undefined');
+    assert.equal(typeof cursorMiddleSelect[1].b, 'undefined');
+    assert.equal(typeof cursorMiddleSelect[0].c, 'undefined');
+    assert.equal(typeof cursorMiddleSelect[1].c, 'undefined');
+  });
+
+  it('handles skipMiddlewareFunction() (gh-13411)', async function() {
+    const schema = new mongoose.Schema({ name: String });
+
+    schema.pre('find', async() => {
+      throw mongoose.skipMiddlewareFunction();
+    });
+
+    const Movie = db.model('Movie', schema);
+
+    await Movie.deleteMany({});
+    await Movie.create([
+      { name: 'Kickboxer' },
+      { name: 'Ip Man' },
+      { name: 'Enter the Dragon' }
+    ]);
+
+    const arr = [];
+    await Movie.find({}).cursor().eachAsync(doc => arr.push(doc.name));
+    assert.strictEqual(arr.length, 0);
+  });
+
+  it('supports including fields using plus path that have select: false in schema (gh-13773)', async function() {
+    const kittySchema = new mongoose.Schema({
+      name: String,
+      age: {
+        select: false,
+        type: Number
+      }
+    });
+
+    db.deleteModel(/Test/);
+    const Kitten = db.model('Test', kittySchema);
+    await Kitten.deleteMany({});
+    const silence = new Kitten({ name: 'Silence', age: 2 });
+    await silence.save();
+
+    const cursor = Kitten.find().select('+age').cursor();
+
+    const kittens = [];
+    for await (const kitten of cursor) {
+      kittens.push(kitten);
+    }
+    assert.strictEqual(kittens.length, 1);
+    assert.strictEqual(kittens[0].name, 'Silence');
+    assert.strictEqual(kittens[0].age, 2);
+  });
+
+  it('throws if calling skipMiddlewareFunction() with non-empty array (gh-13411)', async function() {
+    const schema = new mongoose.Schema({ name: String });
+
+    schema.pre('find', () => {
+      throw mongoose.skipMiddlewareFunction([{ name: 'bar' }]);
+    });
+
+    const Movie = db.model('Movie', schema);
+
+    await Movie.deleteMany({});
+    await Movie.create([
+      { name: 'Kickboxer' },
+      { name: 'Ip Man' },
+      { name: 'Enter the Dragon' }
+    ]);
+
+    const err = await Movie.find().cursor().
+      eachAsync(() => {}).
+      then(() => null, err => err);
+    assert.ok(err);
+    assert.ok(err.message.includes('skipMiddlewareFunction'), err.message);
+  });
+
+  it('returns the underlying Node driver cursor with getDriverCursor()', async function() {
+    const schema = new mongoose.Schema({ name: String });
+    // Add some middleware to ensure the cursor hasn't been created yet when `cursor()` is called.
+    schema.pre('find', async function() {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    });
+
+    const Movie = db.model('Movie', schema);
+
+    await Movie.deleteMany({});
+    await Movie.create([
+      { name: 'Kickboxer' },
+      { name: 'Ip Man' },
+      { name: 'Enter the Dragon' }
+    ]);
+
+    const cursor = await Movie.find({}).cursor();
+    assert.ok(!cursor.cursor);
+    const driverCursor = await cursor.getDriverCursor();
+    assert.ok(cursor.cursor);
+    assert.equal(driverCursor, cursor.cursor);
+  });
+
+  for (const waitForError of [false, true]) {
+    it(`rejects getDriverCursor() called ${waitForError ? 'after' : 'before'} a pre-find error`, async function() {
+      const hookError = new Error('pre-find failed');
+      const schema = new Schema({ name: String });
+      schema.pre('find', async function() {
+        throw hookError;
+      });
+      const TestModel = db.model('FailingCursor', schema);
+      const cursor = TestModel.find().cursor();
+      const errorPromise = once(cursor, 'error');
+
+      if (waitForError) {
+        await errorPromise;
+      }
+
+      await assert.rejects(cursor.getDriverCursor(), error => error === hookError);
+      await errorPromise;
+    });
+  }
+
+  it('handles destroy() (gh-14966)', async function() {
+    db.deleteModel(/Test/);
+    const TestModel = db.model('Test', mongoose.Schema({ name: String }));
+
+    const stream = await TestModel.find().cursor();
+    assert.ok(stream.cursor);
+    assert.ok(!stream.cursor.closed);
+
+    stream.destroy();
+
+    await once(stream.cursor, 'close');
+    assert.ok(stream.destroyed);
+    assert.ok(stream.cursor.closed);
+  });
+
+  it('waits for the driver cursor to close before emitting close on destroy()', async function() {
+    const cursor = Model.find().cursor();
+    const driverCursor = await cursor.getDriverCursor();
+    let finishClose;
+    const closeStub = sinon.stub(driverCursor, 'close').callsFake(() => new Promise(resolve => {
+      finishClose = resolve;
+    }));
+    let closed = false;
+    cursor.once('close', () => { closed = true; });
+    const closePromise = once(cursor, 'close');
+
+    try {
+      cursor.destroy();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(closeStub.callCount, 1);
+      assert.equal(closed, false);
+      assert.equal(cursor._closed, false);
+    } finally {
+      finishClose();
+      await closePromise;
+      closeStub.restore();
+      await driverCursor.close();
+    }
+
+    assert.equal(closed, true);
+    assert.equal(cursor._closed, true);
+  });
+
+  it('emits driver cursor close errors on destroy()', async function() {
+    const cursor = Model.find().cursor();
+    const driverCursor = await cursor.getDriverCursor();
+    const closeError = new Error('driver cursor close failed');
+    const closeStub = sinon.stub(driverCursor, 'close').rejects(closeError);
+    const closePromise = once(cursor, 'close');
+
+    try {
+      cursor.destroy();
+      await assert.rejects(closePromise, error => error === closeError);
+      assert.equal(cursor._closed, false);
+    } finally {
+      closeStub.restore();
+      await driverCursor.close();
+    }
+  });
+
+  it('emits the error passed to destroy() (gh-16609)', async function() {
+    const cursor = Model.find().cursor();
+    const driverCursor = await cursor.getDriverCursor();
+    const destroyError = new Error('consumer stopped reading');
+
+    cursor.destroy(destroyError);
+
+    const [error] = await once(cursor, 'error');
+    assert.strictEqual(error, destroyError);
+    assert.ok(driverCursor.closed);
+  });
+
+  it('does not re-emit a read error when pipeline() destroys the cursor (gh-16609)', async function() {
+    const cursor = Model.find().cursor();
+    const driverCursor = await cursor.getDriverCursor();
+    const readError = new Error('driver read failed');
+    sinon.stub(driverCursor, 'next').rejects(readError);
+    const errors = [];
+    cursor.on('error', error => errors.push(error));
+    const closed = new Promise(resolve => cursor.once('close', resolve));
+
+    const sink = new Writable({ objectMode: true, write(doc, encoding, callback) { callback(); } });
+    await assert.rejects(pipeline(cursor, sink), error => error === readError);
+    await closed;
+
+    assert.deepStrictEqual(errors, [readError]);
+  });
+
+  it('does not throw when destroy() gets an error and there are no error listeners (gh-16609)', async function() {
+    const cursor = Model.find().cursor();
+    const driverCursor = await cursor.getDriverCursor();
+    const destroyError = new Error('consumer stopped reading');
+    // Not `once(cursor, 'close')`, because that adds an error listener
+    const closed = new Promise(resolve => cursor.once('close', resolve));
+
+    cursor.destroy(destroyError);
+    await closed;
+
+    assert.strictEqual(cursor.errored, destroyError);
+    assert.ok(driverCursor.closed);
+  });
+
+  it('handles destroy() before cursor is created (gh-14966)', async function() {
+    db.deleteModel(/Test/);
+    const schema = mongoose.Schema({ name: String });
+    schema.pre('find', () => new Promise(resolve => setTimeout(resolve, 10)));
+    const TestModel = db.model('Test', schema);
+
+    const stream = await TestModel.find().cursor();
+    assert.ok(!stream.cursor);
+    stream.destroy();
+
+    await once(stream, 'cursor');
+    assert.ok(stream.destroyed);
+    assert.ok(stream.cursor.closed);
+  });
+
+  it('applies sanitizeFilter (gh-15720)', async function() {
+    const cursor = Model.find({ name: { $ne: null } }).
+      setOptions({ sanitizeFilter: true }).
+      cursor();
+
+    // Operator injection gets wrapped in `$eq`, so casting the object against
+    // the `name` string path fails rather than matching every document.
+    const err = await cursor.next().then(() => null, err => err);
+    assert.ok(err);
+    assert.equal(err.name, 'CastError');
+  });
+
+  it('sanitizeFilter allows trusted operators (gh-15720)', async function() {
+    const cursor = Model.find({ name: mongoose.trusted({ $ne: null }) }).
+      setOptions({ sanitizeFilter: true }).
+      sort({ name: 1 }).
+      cursor();
+
+    const doc = await cursor.next();
+    assert.equal(doc.name, 'Axl');
+  });
+
+  it('sanitizeFilter rejects $where (gh-15720)', async function() {
+    const cursor = Model.find({ $where: 'this.name === "Axl"' }).
+      setOptions({ sanitizeFilter: true }).
+      cursor();
+
+    const err = await cursor.next().then(() => null, err => err);
+    assert.ok(err);
+    assert.equal(err.message, '$where is not allowed with sanitizeFilter');
   });
 });
+
+async function delay(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}

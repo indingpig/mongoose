@@ -22,7 +22,7 @@ describe('sharding', function() {
       this.$__schema = mockSchema;
       this.$__ = {};
     };
-    Stub.prototype.__proto__ = mongoose.Document.prototype;
+    Object.setPrototypeOf(Stub.prototype, mongoose.Document.prototype);
     const d = new Stub();
     const currentTime = new Date();
     d._doc = { date: currentTime };
@@ -37,12 +37,13 @@ describe('toObject()', function() {
 
   beforeEach(function() {
     Stub = function() {
-      const schema = this.$__schema = {
+      this.$__schema = {
         options: { toObject: { minimize: false, virtuals: true } },
-        virtuals: { virtual: 'test' }
+        virtuals: { virtual: { applyGetters: () => 'test' } }
       };
+      this.$__schema._defaultToObjectOptions = () => this.$__schema.options.toObject;
+      this.$__schema.pathsWithTransforms = () => [];
       this._doc = { empty: {} };
-      this.get = function(path) { return schema.virtuals[path]; };
       this.$__ = {};
     };
     Stub.prototype = Object.create(mongoose.Document.prototype);
@@ -61,8 +62,6 @@ describe('toObject()', function() {
   it('doesnt crash with empty object (gh-3130)', function() {
     const d = new Stub();
     d._doc = undefined;
-    assert.doesNotThrow(function() {
-      d.toObject();
-    });
+    d.toObject();
   });
 });

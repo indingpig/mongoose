@@ -9,8 +9,6 @@ const start = require('./common');
 
 const Document = require('../lib/document');
 const assert = require('assert');
-const co = require('co');
-const utils = require('../lib/utils');
 
 const mongoose = start.mongoose;
 const Schema = mongoose.Schema;
@@ -32,7 +30,7 @@ function TestDocument() {
  * Inherits from Document.
  */
 
-TestDocument.prototype.__proto__ = Document.prototype;
+Object.setPrototypeOf(TestDocument.prototype, Document.prototype);
 
 /**
  * Set a dummy schema to simulate compilation.
@@ -103,270 +101,235 @@ describe('document.populate', function() {
   let db, B, User;
   let user1, user2, post, _id;
 
-  before(function() {
+  before(function createConnection() {
     db = start();
   });
 
-  beforeEach(() => db.deleteModel(/.*/));
+  beforeEach(function deleteModels() {
+    db.deleteModel(/.*/);
+  });
   afterEach(() => require('./util').clearTestData(db));
   afterEach(() => require('./util').stopRemainingOps(db));
 
-  beforeEach(function(done) {
+  beforeEach(async function setupData() {
     B = db.model('BlogPost', BlogPostSchema);
     User = db.model('User', UserSchema);
 
-    _id = new mongoose.Types.ObjectId;
+    _id = new mongoose.Types.ObjectId();
 
-    User.create({
-      name: 'Phoenix',
-      email: 'phx@az.com',
-      blogposts: [_id]
-    }, {
-      name: 'Newark',
-      email: 'ewr@nj.com',
-      blogposts: [_id]
-    }, function(err, u1, u2) {
-      assert.ifError(err);
+    const [u1, u2] = await User.create([
+      {
+        name: 'Phoenix',
+        email: 'phx@az.com',
+        blogposts: [_id]
+      },
+      {
+        name: 'Newark',
+        email: 'ewr@nj.com',
+        blogposts: [_id]
+      }
+    ]);
+    user1 = u1;
+    user2 = u2;
 
-      user1 = u1;
-      user2 = u2;
-
-      B.create({
-        title: 'the how and why',
-        _creator: user1,
-        fans: [user1, user2],
-        comments: [{ _creator: user2, content: 'user2' }, { _creator: user1, content: 'user1' }]
-      }, function(err, p) {
-        assert.ifError(err);
-        post = p;
-        done();
-      });
+    post = await B.create({
+      title: 'the how and why',
+      _creator: user1,
+      fans: [user1, user2],
+      comments: [{ _creator: user2, content: 'user2' }, { _creator: user1, content: 'user1' }]
     });
   });
 
-  after(function(done) {
-    db.close(done);
-  });
-
-  describe('argument processing', function() {
-    describe('duplicates', function() {
-      it('are removed', function(done) {
-        B.findById(post, function(err, post) {
-          assert.ifError(err);
-          post.populate('_creator');
-          assert.equal(Object.keys(post.$__.populate).length, 1);
-          assert.ok('_creator' in post.$__.populate);
-          post.populate('_creator');
-          assert.equal(Object.keys(post.$__.populate).length, 1);
-          assert.ok('_creator' in post.$__.populate);
-          post.populate('_creator fans');
-          assert.equal(Object.keys(post.$__.populate).length, 2);
-          assert.ok('_creator' in post.$__.populate);
-          assert.ok('fans' in post.$__.populate);
-          post.populate({ path: '_creator' });
-          assert.equal(Object.keys(post.$__.populate).length, 2);
-          assert.ok('_creator' in post.$__.populate);
-          assert.ok('fans' in post.$__.populate);
-          done();
-        });
-      });
-      it('overwrite previous', function(done) {
-        B.findById(post, function(err, post) {
-          assert.ifError(err);
-          post.populate('_creator');
-          assert.equal(Object.keys(post.$__.populate).length, 1);
-          assert.equal(post.$__.populate._creator.select, undefined);
-          post.populate({ path: '_creator', select: 'name' });
-          assert.equal(Object.keys(post.$__.populate).length, 1);
-          assert.ok('_creator' in post.$__.populate);
-          assert.equal(post.$__.populate._creator.select, 'name');
-          done();
-        });
-      });
-    });
-  });
-
-  describe('options', function() {
-    it('resets populate options after execution', function(done) {
-      B.findById(post, function(err, post) {
-        const creator_id = post._creator;
-        post.populate('_creator', function(err) {
-          assert.ifError(err);
-          assert.ok(!post.$__.populate);
-          assert.ok(post._creator);
-          assert.equal(String(post._creator._id), String(creator_id));
-          done();
-        });
-      });
-    });
-
-    it('are not modified when no arguments are passed', function() {
-      const d = new TestDocument();
-      const o = utils.clone(d.options);
-      assert.deepEqual(o, d.populate().options);
-    });
+  after(async function() {
+    await db.close();
   });
 
   describe('populating two paths', function() {
-    it('with space delmited string works', function(done) {
-      B.findById(post, function(err, post) {
-        const creator_id = post._creator;
-        const alt_id = post.fans[1];
-        post.populate('_creator fans', function(err) {
-          assert.ifError(err);
-          assert.ok(post._creator);
-          assert.equal(String(post._creator._id), String(creator_id));
-          assert.equal(String(post.fans[0]._id), String(creator_id));
-          assert.equal(String(post.fans[1]._id), String(alt_id));
-          done();
-        });
-      });
+    it('with space delmited string works', async function() {
+      const p = await B.findById(post);
+      const creator_id = p._creator;
+      const alt_id = p.fans[1];
+
+      await p.populate('_creator fans');
+
+      assert.ok(p._creator);
+      assert.equal(String(p._creator._id), String(creator_id));
+      assert.equal(String(p.fans[0]._id), String(creator_id));
+      assert.equal(String(p.fans[1]._id), String(alt_id));
     });
   });
 
-  it('works with just a callback', function(done) {
-    B.findById(post, function(err, post) {
-      const creator_id = post._creator;
-      const alt_id = post.fans[1];
-      post.populate('_creator').populate(function(err) {
-        assert.ifError(err);
-        assert.ok(post._creator);
-        assert.equal(String(post._creator._id), String(creator_id));
-        assert.equal(String(post.fans[1]), String(alt_id));
-        done();
-      });
-    });
+  it('works with await', async function() {
+    const p = await B.findById(post);
+    const creator_id = p._creator;
+    const alt_id = p.fans[1];
+
+    await p.populate('_creator');
+
+    assert.ok(post._creator);
+    assert.equal(String(p._creator._id), String(creator_id));
+    assert.equal(String(p.fans[1]), String(alt_id));
   });
 
-  it('populating using space delimited paths with options', function(done) {
-    B.findById(post, function(err, post) {
-      const param = {};
-      param.select = '-email';
-      param.options = { sort: 'name' };
-      param.path = '_creator fans'; // 2 paths
+  it('populating using space delimited paths with options', async function() {
+    const p = await B.findById(post);
 
-      const creator_id = post._creator;
-      const alt_id = post.fans[1];
-      post.populate(param, function(err, post) {
-        assert.ifError(err);
-        assert.equal(post.fans.length, 2);
-        assert.equal(String(post._creator._id), String(creator_id));
-        assert.equal(String(post.fans[1]._id), String(creator_id));
-        assert.equal(String(post.fans[0]._id), String(alt_id));
-        assert.ok(!post.fans[0].email);
-        assert.ok(!post.fans[1].email);
-        assert.ok(!post.fans[0].isInit('email'));
-        assert.ok(!post.fans[0].isInit(['email']));
-        assert.ok(!post.fans[1].isInit('email'));
-        done();
-      });
-    });
+    const param = {};
+    param.select = '-email';
+    param.options = { sort: 'name' };
+    param.path = '_creator fans'; // 2 paths
+
+    const creator_id = post._creator._id;
+    const alt_id = post.fans[1]._id;
+
+    await p.populate(param);
+
+    assert.equal(p.fans.length, 2);
+    assert.equal(String(p._creator._id), String(creator_id));
+    assert.equal(String(p.fans[1]._id), String(creator_id));
+    assert.equal(String(p.fans[0]._id), String(alt_id));
+    assert.ok(!p.fans[0].email);
+    assert.ok(!p.fans[1].email);
+    assert.ok(!p.fans[0].isInit('email'));
+    assert.ok(!p.fans[0].isInit(['email']));
+    assert.ok(!p.fans[1].isInit('email'));
   });
 
-  it('using multiple populate calls', function(done) {
-    B.findById(post, function(err, post) {
-      const creator_id = post._creator;
-      const alt_id = post.fans[1];
+  it('using multiple populate calls', async function() {
+    const p = await B.findById(post);
 
-      const param = {};
-      param.select = '-email';
-      param.options = { sort: 'name' };
-      param.path = '_creator';
-      post.populate(param);
-      param.path = 'fans';
+    const creator_id = post._creator._id;
+    const alt_id = post.fans[1]._id;
 
-      post.populate(param, function(err, post) {
-        assert.ifError(err);
-        assert.equal(post.fans.length, 2);
-        assert.equal(String(post._creator._id), String(creator_id));
-        assert.equal(String(post.fans[1]._id), String(creator_id));
-        assert.equal(String(post.fans[0]._id), String(alt_id));
-        assert.ok(!post.fans[0].email);
-        assert.ok(!post.fans[1].email);
-        assert.ok(!post.fans[0].isInit('email'));
-        assert.ok(!post.fans[1].isInit('email'));
-        done();
-      });
-    });
+    const param = {};
+    param.select = '-email';
+    param.options = { sort: 'name' };
+    param.path = '_creator';
+    await post.populate(param);
+    param.path = 'fans';
+
+    await p.populate(param);
+
+    assert.equal(p.fans.length, 2);
+    assert.equal(String(p._creator._id), String(creator_id));
+    assert.equal(String(p.fans[1]._id), String(creator_id));
+    assert.equal(String(p.fans[0]._id), String(alt_id));
+    assert.ok(!p.fans[0].email);
+    assert.ok(!p.fans[1].email);
+    assert.ok(!p.fans[0].isInit('email'));
+    assert.ok(!p.fans[1].isInit('email'));
   });
 
-  it('with custom model selection', function(done) {
-    B.findById(post, function(err, post) {
-      const param = {};
-      param.select = '-email';
-      param.options = { sort: 'name' };
-      param.path = '_creator fans';
-      param.model = 'User';
+  it('with custom model selection', async function() {
+    const p = await B.findById(post);
 
-      const creator_id = post._creator;
-      const alt_id = post.fans[1];
-      post.populate(param, function(err, post) {
-        assert.ifError(err);
-        assert.equal(post.fans.length, 2);
-        assert.equal(String(post._creator._id), String(creator_id));
-        assert.equal(String(post.fans[1]._id), String(creator_id));
-        assert.equal(String(post.fans[0]._id), String(alt_id));
-        assert.ok(!post.fans[0].email);
-        assert.ok(!post.fans[1].email);
-        assert.ok(!post.fans[0].isInit('email'));
-        assert.ok(!post.fans[1].isInit('email'));
-        done();
-      });
-    });
+    const param = {};
+    param.select = '-email';
+    param.options = { sort: 'name' };
+    param.path = '_creator fans';
+    param.model = 'User';
+
+    const creator_id = post._creator._id;
+    const alt_id = post.fans[1]._id;
+
+    await p.populate(param);
+
+    assert.equal(p.fans.length, 2);
+    assert.equal(String(p._creator._id), String(creator_id));
+    assert.equal(String(p.fans[1]._id), String(creator_id));
+    assert.equal(String(p.fans[0]._id), String(alt_id));
+    assert.ok(!p.fans[0].email);
+    assert.ok(!p.fans[1].email);
+    assert.ok(!p.fans[0].isInit('email'));
+    assert.ok(!p.fans[1].isInit('email'));
   });
 
-  it('a property not in schema', function(done) {
-    B.findById(post, function(err, post) {
-      assert.ifError(err);
-      post.populate('idontexist', function(err) {
-        assert.ifError(err);
+  it('one path, model selection as second argument', async function() {
+    const b = await B.findById(post);
 
-        // stuff an ad-hoc value in
-        post.$__setValue('idontexist', user1._id);
+    const creator_id = b._creator;
 
-        // populate the non-schema value by passing an explicit model
-        post.populate({ path: 'idontexist', model: 'User' }, function(err, post) {
-          assert.ifError(err);
-          assert.ok(post);
-          assert.equal(user1._id.toString(), post.get('idontexist')._id);
-          assert.equal(post.get('idontexist').name, 'Phoenix');
-          done();
-        });
-      });
-    });
+    await b.populate('_creator', '-email');
+
+    assert.equal(String(b._creator._id), String(creator_id));
+
+    assert.ok(b.populated('_creator'));
+    assert.ok(!b._creator.email);
+    assert.ok(b._creator.age);
   });
 
-  it('of empty array', function(done) {
-    B.findById(post, function(err, post) {
-      post.fans = [];
-      post.populate('fans', function(err) {
-        assert.ifError(err);
-        done();
-      });
-    });
+  it('multiple paths, model selection as second argument', async function() {
+    const b = await B.findById(post);
+
+    await b.populate('_creator fans', '-email');
+
+    assert.ok(b.populated('_creator'));
+    assert.ok(!b._creator.email);
+    assert.ok(b._creator.age);
+
+    assert.ok(b.populated('fans'));
+    assert.ok(!b.fans[0].email);
+    assert.ok(b.fans[0].age);
   });
 
-  it('of array of null/undefined', function(done) {
-    B.findById(post, function(err, post) {
-      post.fans = [null, undefined];
-      post.populate('fans', function(err) {
-        assert.ifError(err);
-        done();
-      });
-    });
+  it('multiple paths, mixed argument types', async function() {
+    const b = await B.findById(post);
+
+    await b.populate([{ path: '_creator', select: '-email' }, 'fans']);
+
+    assert.ok(b.populated('_creator'));
+    assert.ok(!b._creator.email);
+    assert.ok(b._creator.age);
+
+    assert.ok(b.populated('fans'));
+    assert.ok(b.fans[0].email);
+    assert.ok(b.fans[0].age);
   });
 
-  it('of null property', function(done) {
-    B.findById(post, function(err, post) {
-      post._creator = null;
-      post.populate('_creator', function(err) {
-        assert.ifError(err);
-        done();
-      });
-    });
+  it('multiple paths, multiple options', async function() {
+    const b = await B.findById(post);
+
+    await b.populate([
+      { path: '_creator', select: '-email' },
+      { path: 'fans', sort: 'name', select: { age: 0 } }
+    ]);
+
+    assert.ok(b.populated('_creator'));
+    assert.ok(!b._creator.email);
+    assert.ok(b._creator.age);
+
+    assert.ok(b.populated('fans'));
+    assert.ok(!b.fans[0].age);
+    assert.ok(b.fans[0].email);
   });
 
-  it('String _ids', function(done) {
+  it('a property not in schema', async function() {
+    const p = await B.findById(post);
+
+    const err = await p.populate('idontexist').then(() => null, err => err);
+    assert.ok(err);
+  });
+
+  it('of empty array', async function() {
+    const p = await B.findById(post);
+    p.fans = [];
+    await p.populate('fans');
+  });
+
+  it('of array of null/undefined', async function() {
+    const p = await B.findById(post);
+
+    p.fans = [null, undefined];
+    await p.populate('fans');
+  });
+
+  it('of null property', async function() {
+    const p = await B.findById(post);
+    p._creator = null;
+    await p.populate('_creator');
+  });
+
+  it('String _ids', async function() {
     const UserSchema = new Schema({
       _id: String,
       name: String
@@ -383,21 +346,17 @@ describe('document.populate', function() {
 
     const alice = new User({ _id: 'alice', name: 'Alice In Wonderland' });
 
-    alice.save(function(err) {
-      assert.ifError(err);
+    await alice.save();
 
-      const note = new Note({ author: 'alice', body: 'Buy Milk' });
-      note.populate('author', function(err) {
-        assert.ifError(err);
-        assert.ok(note.author);
-        assert.equal(note.author._id, 'alice');
-        assert.equal(note.author.name, 'Alice In Wonderland');
-        done();
-      });
-    });
+    const note = new Note({ author: 'alice', body: 'Buy Milk' });
+    await note.populate('author');
+
+    assert.ok(note.author);
+    assert.equal(note.author._id, 'alice');
+    assert.equal(note.author.name, 'Alice In Wonderland');
   });
 
-  it('Buffer _ids', function(done) {
+  it('Buffer _ids', async function() {
     const UserSchema = new Schema({
       _id: Buffer,
       name: String
@@ -413,30 +372,21 @@ describe('document.populate', function() {
     const Note = db.model('Test', NoteSchema);
 
     const alice = new User({ _id: new mongoose.Types.Buffer('YWxpY2U=', 'base64'), name: 'Alice' });
+    await alice.save();
 
-    alice.save(function(err) {
-      assert.ifError(err);
+    let note = new Note({ author: 'alice', body: 'Buy Milk' });
+    await note.save();
 
-      const note = new Note({ author: 'alice', body: 'Buy Milk' });
-      note.save(function(err) {
-        assert.ifError(err);
+    note = await Note.findById(note);
+    assert.equal(note.author, 'alice');
+    await note.populate('author');
 
-        Note.findById(note.id, function(err, note) {
-          assert.ifError(err);
-          assert.equal(note.author, 'alice');
-          note.populate('author', function(err, note) {
-            assert.ifError(err);
-            assert.equal(note.body, 'Buy Milk');
-            assert.ok(note.author);
-            assert.equal(note.author.name, 'Alice');
-            done();
-          });
-        });
-      });
-    });
+    assert.equal(note.body, 'Buy Milk');
+    assert.ok(note.author);
+    assert.equal(note.author.name, 'Alice');
   });
 
-  it('Number _ids', function(done) {
+  it('Number _ids', async function() {
     const UserSchema = new Schema({
       _id: Number,
       name: String
@@ -452,49 +402,42 @@ describe('document.populate', function() {
     const Note = db.model('Test', NoteSchema);
 
     const alice = new User({ _id: 2359, name: 'Alice' });
+    await alice.save();
 
-    alice.save(function(err) {
-      assert.ifError(err);
+    const note = new Note({ author: 2359, body: 'Buy Milk' });
+    await note.populate('author');
 
-      const note = new Note({ author: 2359, body: 'Buy Milk' });
-      note.populate('author').populate(function(err, note) {
-        assert.ifError(err);
-        assert.ok(note.author);
-        assert.equal(note.author._id, 2359);
-        assert.equal('Alice', note.author.name);
-        done();
-      });
-    });
+    assert.ok(note.author);
+    assert.equal(note.author._id, 2359);
+    assert.equal('Alice', note.author.name);
   });
 
   describe('sub-level properties', function() {
-    it('with string arg', function(done) {
-      B.findById(post, function(err, post) {
-        assert.ifError(err);
-        const id0 = post.comments[0]._creator;
-        const id1 = post.comments[1]._creator;
-        post.populate('comments._creator', function(err, post) {
-          assert.ifError(err);
-          assert.equal(post.comments.length, 2);
-          assert.equal(post.comments[0]._creator.id, id0);
-          assert.equal(post.comments[1]._creator.id, id1);
-          done();
-        });
-      });
+    it('with string arg', async function() {
+      const p = await B.findById(post);
+
+      const id0 = p.comments[0]._creator;
+      const id1 = p.comments[1]._creator;
+
+      await p.populate('comments._creator');
+
+      assert.equal(p.comments.length, 2);
+      assert.equal(p.comments[0]._creator.id, id0);
+      assert.equal(p.comments[1]._creator.id, id1);
     });
   });
 
   describe('of new document', function() {
-    it('should save just the populated _id (gh-1442)', function() {
+    it('should save just the populated _id (gh-1442)', async function() {
       const b = new B({ _creator: user1 });
-      return co(function*() {
-        yield b.populate('_creator').execPopulate();
-        assert.equal(b._creator.name, 'Phoenix');
-        yield b.save();
 
-        const _b = yield B.collection.findOne({ _id: b._id });
-        assert.equal(_b._creator.toString(), String(user1._id));
-      });
+      await b.populate('_creator');
+      assert.equal(b._creator.name, 'Phoenix');
+      await b.save();
+
+      const _b = await B.collection.findOne({ _id: b._id });
+      assert.equal(_b._creator.toString(), String(user1._id));
+
     });
   });
 
@@ -520,7 +463,7 @@ describe('document.populate', function() {
   });
 
   describe('gh-2214', function() {
-    it('should return a real document array when populating', function(done) {
+    it('should return a real document array when populating', async function() {
       const Car = db.model('Car', {
         color: String,
         model: String
@@ -545,30 +488,23 @@ describe('document.populate', function() {
       });
       joe.cars.push(car);
 
-      joe.save(function(error) {
-        assert.ifError(error);
-        car.save(function(error) {
-          assert.ifError(error);
-          Person.findById(joe.id, function(error, joe) {
-            assert.ifError(error);
-            joe.populate('cars', function(error) {
-              assert.ifError(error);
-              car = new Car({
-                model: 'BMW',
-                color: 'black'
-              });
-              joe.cars.push(car);
-              assert.ok(joe.isModified('cars'));
-              done();
-            });
-          });
-        });
+      await joe.save();
+      await car.save();
+
+      const joe2 = await Person.findById(joe.id);
+      await joe2.populate('cars');
+
+      car = new Car({
+        model: 'BMW',
+        color: 'black'
       });
+      joe2.cars.push(car);
+      assert.ok(joe2.isModified('cars'));
     });
   });
 
   describe('gh-7889', function() {
-    it('should save item added to array after populating the array', function(done) {
+    it('should save item added to array after populating the array', function() {
       const Car = db.model('Car', {
         model: Number
       });
@@ -579,18 +515,18 @@ describe('document.populate', function() {
 
       let person;
 
-      Car.create({ model: 0 }).then(car => {
+      return Car.create({ model: 0 }).then(car => {
         return Person.create({ cars: [car._id] });
       }).then(() => {
         return Person.findOne({});
       }).then(p => {
         person = p;
-        return person.populate('cars').execPopulate();
+        return person.populate('cars');
       }).then(() => {
         return Car.create({ model: 1 });
       }).then(car => {
         person.cars.push(car);
-        return person.populate('cars').execPopulate();
+        return person.populate('cars');
       }).then(() => {
         return Car.create({ model: 2 });
       }).then(car => {
@@ -600,13 +536,74 @@ describe('document.populate', function() {
         return Person.findOne({});
       }).then(person => {
         assert.equal(person.cars.length, 3);
-        done();
       });
     });
   });
 
   describe('depopulate', function() {
-    it('can depopulate specific path (gh-2509)', function(done) {
+    it('can depopulate specific path (gh-2509)', async function() {
+      const Person = db.model('Person', {
+        name: String
+      });
+
+      const Band = db.model('Band', {
+        name: String,
+        members: [{ type: Schema.Types.ObjectId, ref: 'Person' }],
+        lead: { type: Schema.Types.ObjectId, ref: 'Person' }
+      });
+
+      const docs = await Person.create([{ name: 'Axl Rose' }, { name: 'Slash' }]);
+
+      let band = await Band.create({
+        name: 'Guns N\' Roses',
+        members: [docs[0]._id, docs[1]],
+        lead: docs[0]._id
+      });
+
+      await band.populate('members');
+
+      assert.equal(band.members[0].name, 'Axl Rose');
+      assert.ok(band.members.isMongooseArray);
+      assert.ok(band.members.addToSet);
+      band.depopulate('members');
+      assert.ok(!band.members[0].name);
+      assert.equal(band.members[0].toString(), docs[0]._id.toString());
+      assert.equal(band.members[1].toString(), docs[1]._id.toString());
+      assert.ok(band.members.isMongooseArray);
+      assert.ok(band.members.addToSet);
+      assert.deepStrictEqual(band.getChanges(), {});
+      assert.ok(!band.populated('members'));
+      assert.ok(!band.populated('lead'));
+
+      await band.populate('lead');
+      assert.equal(band.lead.name, 'Axl Rose');
+      band.depopulate('lead');
+      assert.ok(!band.lead.name);
+      assert.deepStrictEqual(band.getChanges(), {});
+      assert.equal(band.lead.toString(), docs[0]._id.toString());
+
+      const newId = new mongoose.Types.ObjectId();
+      band.lead = newId;
+      assert.deepStrictEqual(band.getChanges(), { $set: { lead: newId } });
+
+      band = await Band.findById(band._id).orFail();
+      await band.populate('members');
+
+      assert.equal(band.members[0].name, 'Axl Rose');
+      assert.ok(band.members.isMongooseArray);
+      assert.ok(band.members.addToSet);
+      band.depopulate('members');
+      assert.ok(!band.members[0].name);
+      assert.equal(band.members[0].toString(), docs[0]._id.toString());
+      assert.equal(band.members[1].toString(), docs[1]._id.toString());
+      assert.ok(band.members.isMongooseArray);
+      assert.ok(band.members.addToSet);
+      assert.deepStrictEqual(band.getChanges(), {});
+      assert.ok(!band.populated('members'));
+      assert.ok(!band.populated('lead'));
+    });
+
+    it('depopulates all (gh-6073)', async function() {
       const Person = db.model('Person', {
         name: String
       });
@@ -618,85 +615,36 @@ describe('document.populate', function() {
       });
 
       const people = [{ name: 'Axl Rose' }, { name: 'Slash' }];
-      Person.create(people, function(error, docs) {
-        assert.ifError(error);
-        const band = {
-          name: 'Guns N\' Roses',
-          members: [docs[0]._id, docs[1]],
-          lead: docs[0]._id
-        };
-        Band.create(band, function(error, band) {
-          band.populate('members', function() {
-            assert.equal(band.members[0].name, 'Axl Rose');
-            band.depopulate('members');
-            assert.ok(!band.members[0].name);
-            assert.equal(band.members[0].toString(), docs[0]._id.toString());
-            assert.equal(band.members[1].toString(), docs[1]._id.toString());
-            assert.ok(!band.populated('members'));
-            assert.ok(!band.populated('lead'));
-            band.populate('lead', function() {
-              assert.equal(band.lead.name, 'Axl Rose');
-              band.depopulate('lead');
-              assert.ok(!band.lead.name);
-              assert.equal(band.lead.toString(), docs[0]._id.toString());
-              done();
-            });
-          });
-        });
+      const docs = await Person.create(people);
+
+      const band = await Band.create({
+        name: 'Guns N\' Roses',
+        members: [docs[0]._id, docs[1]],
+        lead: docs[0]._id
       });
+
+      await band.populate('members lead');
+
+      assert.ok(band.populated('members'));
+      assert.ok(band.populated('lead'));
+      assert.equal(band.members[0].name, 'Axl Rose');
+      band.depopulate();
+      assert.ok(!band.populated('members'));
+      assert.ok(!band.populated('lead'));
     });
 
-    it('depopulates all (gh-6073)', function(done) {
-      const Person = db.model('Person', {
-        name: String
-      });
-
-      const Band = db.model('Band', {
-        name: String,
-        members: [{ type: Schema.Types.ObjectId, ref: 'Person' }],
-        lead: { type: Schema.Types.ObjectId, ref: 'Person' }
-      });
-
-      const people = [{ name: 'Axl Rose' }, { name: 'Slash' }];
-      Person.create(people, function(error, docs) {
-        assert.ifError(error);
-        const band = {
-          name: 'Guns N\' Roses',
-          members: [docs[0]._id, docs[1]],
-          lead: docs[0]._id
-        };
-        Band.create(band, function(error, band) {
-          band.populate('members lead', function() {
-            assert.ok(band.populated('members'));
-            assert.ok(band.populated('lead'));
-            assert.equal(band.members[0].name, 'Axl Rose');
-            band.depopulate();
-            assert.ok(!band.populated('members'));
-            assert.ok(!band.populated('lead'));
-            done();
-          });
-        });
-      });
-    });
-
-    it('doesn\'t throw when called on a doc that is not populated (gh-6075)', function(done) {
+    it('doesn\'t throw when called on a doc that is not populated (gh-6075)', async function() {
       const Person = db.model('Person', {
         name: String
       });
 
       const person = new Person({ name: 'Greg Dulli' });
-      person.save(function(err, doc) {
-        assert.ifError(err);
-        try {
-          doc.depopulate();
-        } catch (e) {
-          assert.ifError(e);
-        }
-        done();
-      });
+      await person.save();
+
+      await person.depopulate();
     });
 
-    it('depopulates virtuals (gh-6075)', function(done) {
+    it('depopulates virtuals (gh-6075)', async function() {
       const otherSchema = new Schema({
         val: String,
         prop: String
@@ -742,30 +690,24 @@ describe('document.populate', function() {
         single: others[1].val
       });
 
-      Other.create(others).
-        then(() => {
-          return test.save();
-        }).
-        then((saved) => {
-          return saved.populate('$others $single').execPopulate();
-        }).
-        then((populated) => {
-          assert.strictEqual(populated.$others.length, 3);
-          assert.strictEqual(populated.$single.prop, 'xyzb');
-          populated.depopulate();
-          assert.equal(populated.$others, null);
-          assert.equal(populated.$single, null);
-          return populated.populate('$last').execPopulate();
-        }).
-        then((populatedAgain) => {
-          assert.strictEqual(populatedAgain.$last.prop, 'xyzb');
-          populatedAgain.depopulate('$last');
-          assert.equal(populatedAgain.$last, null);
-          done();
-        });
+      await Other.create(others);
+      await test.save();
+      await test.populate('$others $single');
+
+      assert.strictEqual(test.$others.length, 3);
+      assert.strictEqual(test.$single.prop, 'xyzb');
+      test.depopulate();
+      assert.equal(test.$others, null);
+      assert.equal(test.$single, null);
+
+      await test.populate('$last');
+
+      assert.strictEqual(test.$last.prop, 'xyzb');
+      test.depopulate('$last');
+      assert.equal(test.$last, null);
     });
 
-    it('depopulates field with empty array (gh-7740)', function() {
+    it('depopulates field with empty array (gh-7740)', async function() {
       db.model(
         'Book',
         new mongoose.Schema({
@@ -781,19 +723,73 @@ describe('document.populate', function() {
         })
       );
 
-      return co(function*() {
-        const author = new Author({
-          name: 'Fonger',
-          books: []
-        });
-        yield author.save();
-        yield author.populate('books').execPopulate();
-        assert.ok(author.books);
-        assert.strictEqual(author.books.length, 0);
-        author.depopulate('books');
-        assert.ok(author.books);
-        assert.strictEqual(author.books.length, 0);
+      const author = new Author({
+        name: 'Fonger',
+        books: []
       });
+      await author.save();
+      await author.populate('books');
+      assert.ok(author.books);
+      assert.strictEqual(author.books.length, 0);
+      author.depopulate('books');
+      assert.ok(author.books);
+      assert.strictEqual(author.books.length, 0);
+    });
+
+    it('depopulates after pushing manually populated (gh-2509)', async function() {
+      const Book = db.model(
+        'Book',
+        new mongoose.Schema({
+          name: String,
+          chapters: Number
+        })
+      );
+      const Author = db.model(
+        'Person',
+        new mongoose.Schema({
+          name: String,
+          books: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Book' }], default: [] }
+        })
+      );
+
+      const books = await Book.create([
+        { name: 'Lost Years of Merlin' },
+        { name: 'Seven Songs of Merlin' },
+        { name: 'Fires of Merlin' }
+      ]);
+      let author = new Author({
+        name: 'T.A. Barron',
+        books: [books[0]._id]
+      });
+      await author.save();
+      await author.populate('books');
+      assert.ok(author.books);
+      assert.strictEqual(author.books.length, 1);
+
+      author.books.push(books[1]);
+      author.depopulate('books');
+      assert.ok(author.books);
+      assert.ok(author.books.isMongooseArray);
+      assert.ok(!author.$populated('books'));
+      assert.deepStrictEqual(author.books, [books[0]._id, books[1]._id]);
+      await author.save();
+
+      author = await Author.findById(author._id).orFail();
+      assert.strictEqual(author.books.length, 2);
+      assert.deepStrictEqual(author.books, [books[0]._id, books[1]._id]);
+      await author.populate('books');
+      author.books.pull(books[0]._id);
+      assert.strictEqual(author.books.length, 1);
+      assert.equal(author.books[0].name, 'Seven Songs of Merlin');
+      author.depopulate();
+      assert.ok(author.books);
+      assert.ok(author.books.isMongooseArray);
+      assert.deepStrictEqual(author.books, [books[1]._id]);
+      await author.save();
+
+      author = await Author.findById(author._id).orFail();
+      assert.strictEqual(author.books.length, 1);
+      assert.deepStrictEqual(author.books, [books[1]._id]);
     });
   });
 
@@ -818,7 +814,7 @@ describe('document.populate', function() {
     }, /on nested docs/);
   });
 
-  it('handles pulling from populated array (gh-3579)', function(done) {
+  it('handles pulling from populated array (gh-3579)', async function() {
     const barSchema = new Schema({ name: String });
 
     const Bar = db.model('Test', barSchema);
@@ -832,26 +828,22 @@ describe('document.populate', function() {
 
     const Foo = db.model('Test1', fooSchema);
 
-    Bar.create([{ name: 'bar1' }, { name: 'bar2' }], function(error, docs) {
-      assert.ifError(error);
-      const foo = new Foo({ bars: [docs[0], docs[1]] });
-      foo.bars.pull(docs[0]._id);
-      foo.save(function(error) {
-        assert.ifError(error);
-        Foo.findById(foo._id, function(error, foo) {
-          assert.ifError(error);
-          assert.equal(foo.bars.length, 1);
-          assert.equal(foo.bars[0].toString(), docs[1]._id.toString());
-          done();
-        });
-      });
-    });
+    const docs = await Bar.create([{ name: 'bar1' }, { name: 'bar2' }]);
+
+    const foo = new Foo({ bars: [docs[0], docs[1]] });
+    foo.bars.pull(docs[0]._id);
+    await foo.save();
+
+    const foo2 = await Foo.findById(foo._id);
+
+    assert.equal(foo2.bars.length, 1);
+    assert.equal(foo2.bars[0].toString(), docs[1]._id.toString());
   });
 
   describe('#populated() with virtuals (gh-7440)', function() {
     let Team;
 
-    beforeEach(function() {
+    beforeEach(function setupVirtualPopulateModels() {
       const teamSchema = mongoose.Schema({
         name: String,
         captain: String
@@ -859,7 +851,7 @@ describe('document.populate', function() {
       Team = db.model('Test', teamSchema);
     });
 
-    it('works with justOne: false', function() {
+    it('works with justOne: false', async function() {
       const playerSchema = mongoose.Schema({
         _id: String,
         name: String
@@ -871,16 +863,15 @@ describe('document.populate', function() {
       });
       const Player = db.model('Person', playerSchema);
 
-      return co(function*() {
-        const player = yield Player.create({ name: 'Derek Jeter', _id: 'test1' });
-        yield Team.create({ name: 'Yankees', captain: 'test1' });
+      const player = await Player.create({ name: 'Derek Jeter', _id: 'test1' });
+      await Team.create({ name: 'Yankees', captain: 'test1' });
 
-        yield player.populate('teams').execPopulate();
-        assert.deepEqual(player.populated('teams'), ['test1']);
-      });
+      await player.populate('teams');
+      assert.deepEqual(player.populated('teams'), ['test1']);
+
     });
 
-    it('works with justOne: true', function() {
+    it('works with justOne: true', async function() {
       const playerSchema = mongoose.Schema({
         _id: String,
         name: String
@@ -893,13 +884,12 @@ describe('document.populate', function() {
       });
       const Player = db.model('Person', playerSchema);
 
-      return co(function*() {
-        const player = yield Player.create({ name: 'Derek Jeter', _id: 'test1' });
-        yield Team.create({ name: 'Yankees', captain: 'test1' });
+      const player = await Player.create({ name: 'Derek Jeter', _id: 'test1' });
+      await Team.create({ name: 'Yankees', captain: 'test1' });
 
-        yield player.populate('team').execPopulate();
-        assert.deepEqual(player.populated('team'), 'test1');
-      });
+      await player.populate('team');
+      assert.deepEqual(player.populated('team'), 'test1');
+
     });
   });
 
@@ -907,7 +897,7 @@ describe('document.populate', function() {
     let Team;
     let Player;
 
-    beforeEach(function() {
+    beforeEach(function setupEmbeddedGetterPopulateModels() {
       const playerSchema = mongoose.Schema({
         _id: String
       });
@@ -943,29 +933,27 @@ describe('document.populate', function() {
       Team = db.model('Test', teamSchema);
     });
 
-    it('works with populate', function() {
-      return co(function*() {
-        yield Player.create({ _id: 'John' });
-        yield Player.create({ _id: 'Foo' });
-        const createdTeam = yield Team.create({ captain: 'John Doe', players: [{ player: 'John Doe' }, { player: 'Foo Bar' }] });
+    it('works with populate', async function() {
+      await Player.create({ _id: 'John' });
+      await Player.create({ _id: 'Foo' });
+      const createdTeam = await Team.create({ captain: 'John Doe', players: [{ player: 'John Doe' }, { player: 'Foo Bar' }] });
 
-        const team = yield Team.findOne({ _id: createdTeam._id })
-          .populate({ path: 'captain', options: { getters: true } })
-          .populate({ path: 'players.player', options: { getters: true } })
-          .exec();
+      const team = await Team.findOne({ _id: createdTeam._id })
+        .populate({ path: 'captain', options: { getters: true } })
+        .populate({ path: 'players.player', options: { getters: true } });
 
-        assert.ok(team.captain);
-        assert.strictEqual(team.captain._id, 'John');
-        assert.strictEqual(team.players.length, 2);
-        assert.ok(team.players[0].player);
-        assert.ok(team.players[1].player);
-        assert.strictEqual(team.players[0].player._id, 'John');
-        assert.strictEqual(team.players[1].player._id, 'Foo');
-      });
+      assert.ok(team.captain);
+      assert.strictEqual(team.captain._id, 'John');
+      assert.strictEqual(team.players.length, 2);
+      assert.ok(team.players[0].player);
+      assert.ok(team.players[1].player);
+      assert.strictEqual(team.players[0].player._id, 'John');
+      assert.strictEqual(team.players[1].player._id, 'Foo');
+
     });
   });
 
-  it('populated() works with nested subdocs (gh-7685)', function() {
+  it('populated() works with nested subdocs (gh-7685)', async function() {
     const schema = mongoose.Schema({ a: { type: String, default: 'TEST' } });
     const schema2 = mongoose.Schema({
       g: {
@@ -984,40 +972,186 @@ describe('document.populate', function() {
     const N = db.model('Test2', schema2);
     const O = db.model('Test3', schema3);
 
-    return co(function*() {
-      const m = yield M.create({ a: 'TEST' });
-      const n = yield N.create({ g: m._id });
-      const o = yield O.create({ i: n._id });
+    const m = await M.create({ a: 'TEST' });
+    const n = await N.create({ g: m._id });
+    const o = await O.create({ i: n._id });
 
-      const doc = yield O.findOne({ _id: o._id }).populate('i').exec();
-      const finalDoc = yield doc.populate('i.g').execPopulate();
+    const doc = await O.findOne({ _id: o._id }).populate('i').exec();
+    const finalDoc = await doc.populate('i.g');
 
-      assert.ok(finalDoc.populated('i.g'));
-      assert.ok(finalDoc.i.populated('g'));
-    });
+    assert.ok(finalDoc.populated('i.g'));
+    assert.ok(finalDoc.i.populated('g'));
   });
 
-  it('doc.execPopulate(options) is a shorthand for doc.populate(options).execPopulate(...) (gh-8839)', function() {
-    const userSchema = new Schema({ name: String });
-    const User = db.model('Test1', userSchema);
-
-    const postSchema = new Schema({
-      user: { type: mongoose.ObjectId, ref: 'Test1' },
-      title: String
+  it('works with single strings (gh-11160)', async() => {
+    const bookSchema = mongoose.Schema({
+      title: String,
+      authorId: { type: Schema.ObjectId, ref: 'Author' }
     });
 
-    const Post = db.model('Test2', postSchema);
-
-    return co(function*() {
-      const user = yield User.create({ name: 'val' });
-
-      yield Post.create({ title: 'test1', user: user });
-
-      const post = yield Post.findOne();
-
-      yield post.execPopulate({ path: 'user' });
-
-      assert.equal(post.user.name, 'val');
+    const authorSchema = mongoose.Schema({
+      name: String,
+      websiteId: { type: Schema.ObjectId, ref: 'Website' }
     });
+
+    const websiteSchema = mongoose.Schema({
+      url: String
+    });
+
+    const Book = db.model('Book', bookSchema);
+    const Author = db.model('Author', authorSchema);
+    const Website = db.model('Website', websiteSchema);
+
+
+    const website = new Website({ url: 'http://www.clean-code.com' });
+    const author = new Author({ name: 'Robert C. Martin', websiteId: website._id });
+    const book = new Book({ title: 'Clean Code', authorId: author._id });
+    await Promise.all([
+      website.save(),
+      author.save(),
+      book.save()
+    ]);
+
+    const foundBook = await Book.findOne({ _id: book._id });
+    await foundBook.populate({ path: 'authorId', populate: 'websiteId' });
+    assert.ok(foundBook.populated('authorId'));
+    assert.ok(foundBook.authorId.populated('websiteId'));
+  });
+
+  it('works when populating a nested document inside an array parent (gh-14435)', async function() {
+    const CodeSchema = new Schema({
+      code: String
+    });
+
+    const UserSchema = new Schema({
+      username: String,
+      extras: [
+        new Schema({
+          config: new Schema({
+            paymentConfiguration: {
+              paymentMethods: [
+                {
+                  type: Schema.Types.ObjectId,
+                  ref: 'Code'
+                }
+              ]
+            }
+          })
+        })
+      ]
+    });
+
+    const Code = db.model('Code', CodeSchema);
+    const CodeUser = db.model('CodeUser', UserSchema);
+
+    const code = await Code.create({
+      code: 'test code'
+    });
+
+    await CodeUser.create({
+      username: 'TestUser',
+      extras: [
+        {
+          config: {
+            paymentConfiguration: {
+              paymentMethods: [code._id]
+            }
+          }
+        }
+      ]
+    });
+
+    const codeUser = await CodeUser.findOne({ username: 'TestUser' }).populate(
+      'extras.config.paymentConfiguration.paymentMethods'
+    );
+
+    assert.ok(codeUser.username);
+    assert.strictEqual(codeUser.username, 'TestUser');
+    assert.ok(codeUser.extras);
+    assert.strictEqual(codeUser.extras.length, 1);
+    assert.ok(codeUser.extras[0]);
+    assert.ok(codeUser.extras[0].config);
+    assert.ok(codeUser.extras[0].config.paymentConfiguration);
+    assert.ok(codeUser.extras[0].config.paymentConfiguration.paymentMethods);
+    assert.strictEqual(codeUser.extras[0].config.paymentConfiguration.paymentMethods.length, 1);
+    assert.deepStrictEqual(codeUser.extras[0].config.paymentConfiguration.paymentMethods[0]._id, code._id);
+    assert.strictEqual(codeUser.extras[0].config.paymentConfiguration.paymentMethods[0].code, 'test code');
+  });
+
+  it('supports populate with ordered option (gh-15231)', async function() {
+    const docSchema = new Schema({
+      refA: { type: Schema.Types.ObjectId, ref: 'Test1' },
+      refB: { type: Schema.Types.ObjectId, ref: 'Test2' },
+      refC: { type: Schema.Types.ObjectId, ref: 'Test3' }
+    });
+
+    const doc1Schema = new Schema({ name: String });
+    const doc2Schema = new Schema({ title: String });
+    const doc3Schema = new Schema({ content: String });
+
+    const Doc = db.model('Test', docSchema);
+    const Doc1 = db.model('Test1', doc1Schema);
+    const Doc2 = db.model('Test2', doc2Schema);
+    const Doc3 = db.model('Test3', doc3Schema);
+
+    const doc1 = await Doc1.create({ name: 'test 1' });
+    const doc2 = await Doc2.create({ title: 'test 2' });
+    const doc3 = await Doc3.create({ content: 'test 3' });
+
+    const docD = await Doc.create({
+      refA: doc1._id,
+      refB: doc2._id,
+      refC: doc3._id
+    });
+
+    await docD.populate({
+      path: ['refA', 'refB', 'refC'],
+      ordered: true
+    });
+
+    assert.ok(docD.populated('refA'));
+    assert.ok(docD.populated('refB'));
+    assert.ok(docD.populated('refC'));
+
+    assert.equal(docD.refA.name, 'test 1');
+    assert.equal(docD.refB.title, 'test 2');
+    assert.equal(docD.refC.content, 'test 3');
+  });
+
+  it('handles re-populating map of array of refs (gh-9359)', async function() {
+    const UserSchema = mongoose.Schema({
+      columns: { type: Map, of: [{ type: 'ObjectId', ref: 'Test1' }] }
+    });
+    const CardSchema = mongoose.Schema({
+      title: { type: String },
+      sequence: { type: 'ObjectId', ref: 'Test2' }
+    });
+    const SequenceSchema = mongoose.Schema({
+      foo: { type: String }
+    });
+
+    const Sequence = db.model('Test2', SequenceSchema);
+    const Card = db.model('Test1', CardSchema);
+    const User = db.model('Test', UserSchema);
+
+    const sequence = await Sequence.create({ foo: 'bar' });
+    const card1 = await Card.create({ title: 'card1', sequence });
+    const card2 = await Card.create({ title: 'card2', sequence });
+    const card3 = await Card.create({ title: 'card3' });
+    const card4 = await Card.create({ title: 'card4', sequence });
+    await User.create({
+      columns: { key1: [card1, card2], key2: [card3, card4] }
+    });
+
+    const user = await User.findOne();
+    await user.populate('columns.$*');
+    assert.deepStrictEqual(user.columns.get('key1').map(subdoc => subdoc.title), ['card1', 'card2']);
+    assert.deepStrictEqual(user.columns.get('key2').map(subdoc => subdoc.title), ['card3', 'card4']);
+    await user.populate('columns.$*.sequence');
+    assert.deepStrictEqual(user.columns.get('key1').map(subdoc => subdoc.title), ['card1', 'card2']);
+    assert.deepStrictEqual(user.columns.get('key1').map(subdoc => subdoc.sequence.foo), ['bar', 'bar']);
+    assert.deepStrictEqual(user.columns.get('key2').map(subdoc => subdoc.title), ['card3', 'card4']);
+    assert.deepStrictEqual(user.columns.get('key2').map(subdoc => subdoc.sequence?.foo), [undefined, 'bar']);
+
   });
 });

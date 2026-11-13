@@ -1,12 +1,13 @@
 'use strict';
 
-const Schema = require('../../lib/schema');
 const assert = require('assert');
-const getSchemaTypes = require('../../lib/helpers/populate/getSchemaTypes');
+
 const mongoose = require('../common').mongoose;
+const Schema = require('../../lib/schema');
+const getSchemaTypes = require('../../lib/helpers/populate/getSchemaTypes');
 
 describe('getSchemaTypes', function() {
-  it('handles embedded discriminators (gh-5970)', function(done) {
+  it('handles embedded discriminators (gh-5970)', function() {
     const ItemSchema = new Schema({
       title: {
         type: String,
@@ -49,7 +50,7 @@ describe('getSchemaTypes', function() {
       ]
     };
 
-    const schemaTypes = getSchemaTypes(BundleSchema, doc, 'items.author');
+    const schemaTypes = getSchemaTypes(null, BundleSchema, doc, 'items.author');
 
     assert.ok(Array.isArray(schemaTypes));
     // Make sure we only got the schema paths for Book and EBook, and none
@@ -57,11 +58,9 @@ describe('getSchemaTypes', function() {
     assert.equal(schemaTypes.length, 2);
     assert.equal(schemaTypes[0].options.ref, 'Ref1');
     assert.equal(schemaTypes[1].options.ref, 'Ref2');
-
-    done();
   });
 
-  it('multiple embedded discriminators (gh-6064)', function(done) {
+  it('multiple embedded discriminators (gh-6064)', function() {
     const ItemSchema = new Schema({
       title: {
         type: String,
@@ -124,7 +123,7 @@ describe('getSchemaTypes', function() {
         ]
       }
     };
-    const schemaTypes = getSchemaTypes(BundleSchema, doc, 'level2.items.author');
+    const schemaTypes = getSchemaTypes(null, BundleSchema, doc, 'level2.items.author');
 
     assert.ok(Array.isArray(schemaTypes));
     // Make sure we only got the schema paths for Book and EBook, and none
@@ -132,11 +131,9 @@ describe('getSchemaTypes', function() {
     assert.equal(schemaTypes.length, 2);
     assert.equal(schemaTypes[0].options.ref, 'Ref1');
     assert.equal(schemaTypes[1].options.ref, 'Ref2');
-
-    done();
   });
 
-  it('handles already populated paths (gh-6798)', function(done) {
+  it('handles already populated paths (gh-6798)', function() {
     const DriverSchema = new mongoose.Schema({
       name: 'String',
       cars: [{ type: 'ObjectId', required: false, ref: 'gh6798_Car' }]
@@ -161,10 +158,8 @@ describe('getSchemaTypes', function() {
     assert.equal(driver.cars[0].name, '1970 Dodge Charger');
     assert.ok(driver.populated('cars'));
 
-    const schematype = getSchemaTypes(DriverSchema, driver, 'cars.producer');
+    const schematype = getSchemaTypes(null, DriverSchema, driver, 'cars.producer');
     assert.equal(schematype.options.ref, 'gh6798_Producer');
-
-    done();
   });
 
   it('handles embedded discriminators in nested arrays (gh-9984)', function() {
@@ -179,9 +174,23 @@ describe('getSchemaTypes', function() {
     }));
     contentPath.discriminator('Wall', new Schema({ color: String }));
 
-    const schemaTypes = getSchemaTypes(mapSchema, null, 'tiles.enemy');
+    const schemaTypes = getSchemaTypes(null, mapSchema, null, 'tiles.enemy');
     assert.ok(Array.isArray(schemaTypes));
     assert.equal(schemaTypes.length, 1);
     assert.equal(schemaTypes[0].options.ref, 'Enemy');
+  });
+
+  it('finds path underneath nested subdocument with map of mixed (gh-12530)', function() {
+    const schema = new Schema({
+      child: new Schema({
+        testMap: {
+          type: Map,
+          of: 'Mixed'
+        }
+      })
+    });
+
+    const schemaTypes = getSchemaTypes(null, schema, null, 'child.testMap.foo.bar');
+    assert.equal(schemaTypes.instance, 'Mixed');
   });
 });

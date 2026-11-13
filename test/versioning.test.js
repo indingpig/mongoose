@@ -7,8 +7,7 @@
 const start = require('./common');
 
 const assert = require('assert');
-const co = require('co');
-const random = require('../lib/utils').random;
+const random = require('./util').random;
 
 const mongoose = start.mongoose;
 const Schema = mongoose.Schema;
@@ -23,8 +22,8 @@ describe('versioning', function() {
     db = start();
   });
 
-  after(function(done) {
-    db.close(done);
+  after(async function() {
+    await db.close();
   });
 
   beforeEach(() => db.deleteModel(/.*/));
@@ -68,599 +67,915 @@ describe('versioning', function() {
     BlogPost = db.model('BlogPost', BlogPost);
   });
 
-  it('is only added to parent schema (gh-1265)', function(done) {
+  it('is only added to parent schema (gh-1265)', function() {
     assert.ok(BlogPost.schema.path('__v'));
     assert.ok(!BlogPost.schema.path('comments').__v);
     assert.ok(!BlogPost.schema.path('meta.nested').__v);
-    done();
   });
 
-  it('versioning without version key', function(done) {
+  it('versioning without version key', async function() {
     const V = BlogPost;
 
-    const doc = new V;
+    let doc = new V();
     doc.numbers = [3, 4, 5, 6, 7];
     doc.comments = [
-      { title: 'does it work?', date: new Date },
+      { title: 'does it work?', date: new Date() },
       { title: '1', comments: [{ title: 'this is sub #1' }, { title: 'this is sub #2' }] },
       { title: '2', comments: [{ title: 'this is sub #3' }, { title: 'this is sub #4' }] },
-      { title: 'hi', date: new Date }
+      { title: 'hi', date: new Date() }
     ];
 
-    function test(err) {
-      assert.ifError(err);
-      // test getting docs back from db missing version key
-      V.findById(doc).select('numbers comments').exec(function(err, doc) {
-        assert.ifError(err);
-        doc.comments[0].title = 'no version was included';
-        const d = doc.$__delta();
-        assert.ok(!d[0].__v, 'no version key was selected so should not be included');
-        done();
-      });
-    }
-
-    doc.save(test);
+    await doc.save();
+    doc = await V.findById(doc).select('numbers comments');
+    doc.comments[0].title = 'no version was included';
+    const d = doc.$__delta();
+    assert.ok(!d[0].__v, 'no version key was selected so should not be included');
   });
 
-  it('version works with strict docs', function(done) {
+  it('version works with strict docs', async function() {
     const schema = new Schema({ str: ['string'] }, { strict: true, collection: 'versionstrict_' + random() });
     db.deleteModel(/BlogPost/);
     const M = db.model('BlogPost', schema);
-    const m = new M({ str: ['death', 'to', 'smootchy'] });
-    m.save(function(err) {
-      assert.ifError(err);
-      M.find(m, function(err, m) {
-        assert.ifError(err);
-        assert.equal(m.length, 1);
-        m = m[0];
-        assert.equal(m._doc.__v, 0);
-        m.str.pull('death');
-        m.save(function(err) {
-          assert.ifError(err);
-          M.findById(m, function(err, m) {
-            assert.ifError(err);
-            assert.equal(m._doc.__v, 1);
-            assert.equal(m.str.length, 2);
-            assert.ok(!~m.str.indexOf('death'));
-            done();
-          });
-        });
-      });
-    });
+    let m = new M({ str: ['death', 'to', 'smootchy'] });
+    await m.save();
+    m = await M.find(m);
+    assert.equal(m.length, 1);
+    m = m[0];
+    assert.equal(m._doc.__v, 0);
+    m.str.pull('death');
+    await m.save();
+    m = await M.findById(m);
+    assert.equal(m._doc.__v, 1);
+    assert.equal(m.str.length, 2);
+    assert.ok(!~m.str.indexOf('death'));
   });
 
-  it('version works with existing unversioned docs', function(done) {
+  it('version works with existing unversioned docs', async function() {
     const V = BlogPost;
 
-    V.collection.insertOne({ title: 'unversioned', numbers: [1, 2, 3] }, { safe: true }, function(err) {
-      assert.ifError(err);
-      V.findOne({ title: 'unversioned' }, function(err, d) {
-        assert.ifError(err);
-        assert.ok(!d._doc.__v);
-        d.numbers.splice(1, 1, 10);
-        const o = d.$__delta();
-        assert.equal(o[0].__v, undefined);
-        assert.ok(o[1].$inc);
-        assert.equal(o[1].$inc.__v, 1);
-        d.save(function(err, d) {
-          assert.ifError(err);
-          assert.equal(d._doc.__v, 1);
-          V.findById(d, function(err, d) {
-            assert.ifError(err);
-            assert.ok(d);
-            done();
-          });
-        });
-      });
-    });
+    await V.collection.insertOne({ title: 'unversioned', numbers: [1, 2, 3] });
+    let d = await V.findOne({ title: 'unversioned' });
+    assert.ok(!d._doc.__v);
+    d.numbers.splice(1, 1, 10);
+    const o = d.$__delta();
+    assert.equal(o[0].__v, undefined);
+    assert.ok(o[1].$inc);
+    assert.equal(o[1].$inc.__v, 1);
+    await d.save();
+    assert.equal(d._doc.__v, 1);
+    d = await V.findById(d);
+    assert.ok(d);
   });
 
-  it('versionKey is configurable', function(done) {
+  it('versionKey is configurable', async function() {
     const schema = new Schema(
       { configured: 'bool' },
       { versionKey: 'lolwat', collection: 'configuredversion' + random() });
     const V = db.model('Test', schema);
-    const v = new V({ configured: true });
-    v.save(function(err) {
-      assert.ifError(err);
-      V.findById(v, function(err1, v) {
-        assert.ifError(err1);
-        assert.equal(v._doc.lolwat, 0);
-        done();
-      });
-    });
+    let v = new V({ configured: true });
+    await v.save();
+    v = await V.findById(v);
+    assert.equal(v._doc.lolwat, 0);
   });
 
-  it('can be disabled', function(done) {
+  it('can be disabled', async function() {
     const schema = new Schema({ x: ['string'] }, { versionKey: false });
     const M = db.model('Test', schema);
-    M.create({ x: ['hi'] }, function(err, doc) {
-      assert.ifError(err);
-      assert.equal('__v' in doc._doc, false);
-      doc.x.pull('hi');
-      doc.save(function(err) {
-        assert.ifError(err);
-        assert.equal('__v' in doc._doc, false);
+    let doc = await M.create({ x: ['hi'] });
+    assert.equal('__v' in doc._doc, false);
+    doc.x.pull('hi');
+    await doc.save();
+    assert.equal('__v' in doc._doc, false);
 
-        doc.set('x.0', 'updated');
-        const d = doc.$__delta()[0];
-        assert.equal(d.__v, undefined, 'version should not be added to where clause');
+    doc.set('x.0', 'updated');
+    const d = doc.$__delta()[0];
+    assert.equal(d.__v, undefined, 'version should not be added to where clause');
 
-        M.collection.findOne({ _id: doc._id }, function(err, doc) {
-          assert.equal('__v' in doc, false);
-          done();
-        });
-      });
-    });
+    doc = await M.collection.findOne({ _id: doc._id });
+    assert.equal('__v' in doc, false);
   });
 
-  it('works with numbericAlpha paths', function(done) {
+  it('works with numbericAlpha paths', async function() {
     const M = BlogPost;
     const m = new M({ mixed: {} });
     const path = 'mixed.4a';
     m.set(path, 2);
-    m.save(function(err) {
-      assert.ifError(err);
-      done();
-    });
+    await m.save();
   });
 
   describe('doc.increment()', function() {
-    it('works without any other changes (gh-1475)', function(done) {
+    it('works without any other changes (gh-1475)', async function() {
       const V = BlogPost;
 
-      const doc = new V;
-      doc.save(function(err) {
-        assert.ifError(err);
-        assert.equal(doc.__v, 0);
+      let doc = new V();
+      await doc.save();
+      assert.equal(doc.__v, 0);
 
-        doc.increment();
+      doc.increment();
 
-        doc.save(function(err) {
-          assert.ifError(err);
+      await doc.save();
+      assert.equal(doc.__v, 1);
 
-          assert.equal(doc.__v, 1);
-
-          V.findById(doc, function(err, doc) {
-            assert.ifError(err);
-            assert.equal(doc.__v, 1);
-            done();
-          });
-        });
-      });
+      doc = await V.findById(doc);
+      assert.equal(doc.__v, 1);
     });
   });
 
-  it('allows concurrent push', function() {
-    return co(function*() {
-      let a = new BlogPost({
-        meta: {
-          numbers: []
-        }
-      });
-      yield a.save();
-      const b = yield BlogPost.findById(a);
+  it('allows concurrent push', async function() {
 
-      assert.equal(a._doc.__v, 0);
-
-      a.meta.numbers.push(2);
-      b.meta.numbers.push(4);
-
-      yield a.save();
-      yield b.save();
-
-      a = yield BlogPost.findById(a);
-      assert.deepEqual(a.toObject().meta.numbers, [2, 4]);
-      assert.equal(a._doc.__v, 2);
+    let a = new BlogPost({
+      meta: {
+        numbers: []
+      }
     });
+    await a.save();
+    const b = await BlogPost.findById(a);
+
+    assert.equal(a._doc.__v, 0);
+
+    a.meta.numbers.push(2);
+    b.meta.numbers.push(4);
+
+    await a.save();
+    await b.save();
+
+    a = await BlogPost.findById(a);
+    assert.deepEqual(a.toObject().meta.numbers, [2, 4]);
+    assert.equal(a._doc.__v, 2);
   });
 
-  it('allows concurrent push and pull', function() {
-    return co(function*() {
-      let a = new BlogPost({
-        meta: {
-          numbers: [2, 4, 6, 8]
-        }
-      });
-      yield a.save();
-      const b = yield BlogPost.findById(a);
+  it('allows concurrent push and pull', async function() {
 
-      assert.equal(a._doc.__v, 0);
-
-      a.meta.numbers.pull(2);
-      b.meta.numbers.push(10);
-
-      yield [a.save(), b.save()];
-
-      a = yield BlogPost.findById(a);
-      assert.deepEqual(a.toObject().meta.numbers, [4, 6, 8, 10]);
-      assert.equal(a._doc.__v, 2);
+    let a = new BlogPost({
+      meta: {
+        numbers: [2, 4, 6, 8]
+      }
     });
+    await a.save();
+    const b = await BlogPost.findById(a);
+
+    assert.equal(a._doc.__v, 0);
+
+    a.meta.numbers.pull(2);
+    b.meta.numbers.push(10);
+
+    await a.save();
+    await b.save();
+
+    a = await BlogPost.findById(a);
+    assert.deepEqual(a.toObject().meta.numbers, [4, 6, 8, 10]);
+    assert.equal(a._doc.__v, 2);
   });
 
-  it('throws if you set a positional path after pulling', function() {
-    return co(function*() {
-      let a = new BlogPost({
-        meta: {
-          numbers: [2, 4, 6, 8]
-        }
-      });
-      yield a.save();
-      const b = yield BlogPost.findById(a);
+  it('throws if you set a positional path after pulling', async function() {
 
-      assert.equal(a._doc.__v, 0);
-
-      a.meta.numbers.pull(4, 6);
-      b.set('meta.numbers.2', 7);
-
-      yield a.save();
-      const err = yield b.save().then(() => null, err => err);
-
-      assert.ok(/No matching document/.test(err.message), err.message);
-      a = yield BlogPost.findById(a);
-      assert.equal(a._doc.__v, 1);
+    let a = new BlogPost({
+      meta: {
+        numbers: [2, 4, 6, 8]
+      }
     });
+    await a.save();
+    const b = await BlogPost.findById(a);
+
+    assert.equal(a._doc.__v, 0);
+
+    a.meta.numbers.pull(4, 6);
+    b.set('meta.numbers.2', 7);
+
+    await a.save();
+    const err = await b.save().then(() => null, err => err);
+
+    assert.ok(/No matching document/.test(err.message), err.message);
+    a = await BlogPost.findById(a);
+    assert.equal(a._doc.__v, 1);
   });
 
-  it('allows pull/push after $set', function() {
-    return co(function*() {
-      let a = new BlogPost({
-        arr: ['test1', 10]
-      });
-      yield a.save();
-      const b = yield BlogPost.findById(a);
+  it('allows pull/push after $set', async function() {
 
-      assert.equal(a._doc.__v, 0);
-
-      a.set('arr.0', 'not an array');
-      // should overwrite a's changes, last write wins
-      b.arr.pull(10);
-      b.arr.addToSet('using set');
-
-      yield a.save();
-      yield b.save();
-
-      a = yield BlogPost.findById(a);
-      assert.deepEqual(a.toObject().arr, ['test1', 'using set']);
+    let a = new BlogPost({
+      arr: ['test1', 10]
     });
+    await a.save();
+    const b = await BlogPost.findById(a);
+
+    assert.equal(a._doc.__v, 0);
+
+    a.set('arr.0', 'not an array');
+    // should overwrite a's changes, last write wins
+    b.arr.pull(10);
+    b.arr.addToSet('using set');
+
+    await a.save();
+    await b.save();
+
+    a = await BlogPost.findById(a);
+    assert.deepEqual(a.toObject().arr, ['test1', 'using set']);
   });
 
-  it('should add version to where clause', function() {
-    return co(function*() {
-      let a = new BlogPost({
-        arr: [['before update']]
-      });
-      yield a.save();
+  it('should add version to where clause', async function() {
 
-      assert.equal(a._doc.__v, 0);
-
-      a.set('arr.0.0', 'updated');
-      const d = a.$__delta();
-      assert.equal(a._doc.__v, d[0].__v, 'version should be added to where clause');
-      assert.ok(!('$inc' in d[1]));
-
-      yield a.save();
-
-      a = yield BlogPost.findById(a);
-      assert.equal(a.arr[0][0], 'updated');
-      assert.equal(a._doc.__v, 0);
+    let a = new BlogPost({
+      arr: [['before update']]
     });
+    await a.save();
+
+    assert.equal(a._doc.__v, 0);
+
+    a.set('arr.0.0', 'updated');
+    const d = a.$__delta();
+    assert.equal(a._doc.__v, d[0].__v, 'version should be added to where clause');
+    assert.ok(!('$inc' in d[1]));
+
+    await a.save();
+
+    a = await BlogPost.findById(a);
+    assert.equal(a.arr[0][0], 'updated');
+    assert.equal(a._doc.__v, 0);
   });
 
-  it('$set after pull/push throws', function() {
-    return co(function*() {
-      const a = new BlogPost({
-        arr: ['test1', 'using set']
-      });
-      yield a.save();
-      const b = yield BlogPost.findById(a);
+  it('$set after pull/push throws', async function() {
 
-      assert.equal(a._doc.__v, 0);
-
-      b.set('arr.0', 'not an array');
-      // force a $set
-      a.arr.pull('using set');
-      a.arr.push('woot', 'woot2');
-      a.arr.$pop();
-
-      yield a.save();
-      const err = yield b.save().then(() => null, err => err);
-
-      assert.ok(/No matching document/.test(err.message), err.message);
+    const a = new BlogPost({
+      arr: ['test1', 'using set']
     });
+    await a.save();
+    const b = await BlogPost.findById(a);
+
+    assert.equal(a._doc.__v, 0);
+
+    b.set('arr.0', 'not an array');
+    // force a $set
+    a.arr.pull('using set');
+    a.arr.push('woot', 'woot2');
+    a.arr.$pop();
+
+    await a.save();
+    const err = await b.save().then(() => null, err => err);
+
+    assert.ok(/No matching document/.test(err.message), err.message);
   });
 
-  it('doesnt persist conflicting changes', function() {
-    return co(function*() {
-      const a = new BlogPost({
-        meta: { nested: [{ title: 'test1' }, { title: 'test2' }] }
-      });
-      yield a.save();
-      const b = yield BlogPost.findById(a);
+  it('doesnt persist conflicting changes', async function() {
 
-      assert.equal(a._doc.__v, 0);
-
-      a.meta.nested.$pop();
-      b.meta.nested.$pop();
-      yield a.save();
-      const err = yield b.save().then(() => null, err => err);
-
-      assert.ok(/No matching document/.test(err.message), err.message);
+    const a = new BlogPost({
+      meta: { nested: [{ title: 'test1' }, { title: 'test2' }] }
     });
+    await a.save();
+    const b = await BlogPost.findById(a);
+
+    assert.equal(a._doc.__v, 0);
+
+    a.meta.nested.$pop();
+    b.meta.nested.$pop();
+    await a.save();
+    const err = await b.save().then(() => null, err => err);
+
+    assert.ok(/No matching document/.test(err.message), err.message);
   });
 
-  it('increments version on push', function() {
-    return co(function*() {
-      let a = new BlogPost({
-        meta: { nested: [] }
-      });
-      yield a.save();
-      const b = yield BlogPost.findById(a);
+  it('increments version on push', async function() {
 
-      assert.equal(a._doc.__v, 0);
-
-      a.meta.nested.push({ title: 'test1' });
-      a.meta.nested.push({ title: 'test2' });
-      b.meta.nested.push({ title: 'test3' });
-      yield a.save();
-      yield b.save();
-
-      a = yield BlogPost.findById(a);
-      assert.equal(a._doc.__v, 2);
-      assert.deepEqual(a.meta.nested.map(v => v.title), ['test1', 'test2', 'test3']);
+    let a = new BlogPost({
+      meta: { nested: [] }
     });
+    await a.save();
+    const b = await BlogPost.findById(a);
+
+    assert.equal(a._doc.__v, 0);
+
+    a.meta.nested.push({ title: 'test1' });
+    a.meta.nested.push({ title: 'test2' });
+    b.meta.nested.push({ title: 'test3' });
+    await a.save();
+    await b.save();
+
+    a = await BlogPost.findById(a);
+    assert.equal(a._doc.__v, 2);
+    assert.deepEqual(a.meta.nested.map(v => v.title), ['test1', 'test2', 'test3']);
   });
 
-  it('does not increment version when setting nested paths', function() {
-    return co(function*() {
-      let a = new BlogPost({
-        meta: {
-          nested: [{ title: 'test1' }, { title: 'test2' }, { title: 'test3' }]
-        }
-      });
-      yield a.save();
-      const b = yield BlogPost.findById(a);
+  it('does not increment version when setting nested paths', async function() {
 
-      assert.equal(a._doc.__v, 0);
-
-      a.meta.nested[2].title = 'two';
-      b.meta.nested[0].title = 'zero';
-      b.meta.nested[1].title = 'sub one';
-
-      yield [a.save(), b.save()];
-      assert.equal(a._doc.__v, 0);
-
-      a = yield BlogPost.findById(a);
-      assert.equal(a.meta.nested[2].title, 'two');
-      assert.equal(a.meta.nested[0].title, 'zero');
+    let a = new BlogPost({
+      meta: {
+        nested: [{ title: 'test1' }, { title: 'test2' }, { title: 'test3' }]
+      }
     });
+    await a.save();
+    const b = await BlogPost.findById(a);
+
+    assert.equal(a._doc.__v, 0);
+
+    a.meta.nested[2].title = 'two';
+    b.meta.nested[0].title = 'zero';
+    b.meta.nested[1].title = 'sub one';
+
+    await Promise.all([a.save(), b.save()]);
+    assert.equal(a._doc.__v, 0);
+
+    a = await BlogPost.findById(a);
+    assert.equal(a.meta.nested[2].title, 'two');
+    assert.equal(a.meta.nested[0].title, 'zero');
   });
 
-  it('increments version when modifying mixed array', function() {
-    return co(function*() {
-      const a = new BlogPost({ mixed: { arr: [] } });
-      yield a.save();
+  it('increments version when modifying mixed array', async function() {
 
-      assert.equal(a._doc.__v, 0);
+    const a = new BlogPost({ mixed: { arr: [] } });
+    await a.save();
 
-      a.mixed.arr.push([10], { x: 1 }, 'test');
-      a.markModified('mixed.arr');
+    assert.equal(a._doc.__v, 0);
 
-      yield a.save();
+    a.mixed.arr.push([10], { x: 1 }, 'test');
+    a.markModified('mixed.arr');
 
-      assert.equal(a._doc.__v, 1);
-      assert.equal(a.mixed.arr.length, 3);
-      assert.equal(a.mixed.arr[1].x, 1);
-      assert.equal(a.mixed.arr[2], 'test');
-      assert.equal(a.mixed.arr[0][0], 10);
-    });
+    await a.save();
+
+    assert.equal(a._doc.__v, 1);
+    assert.equal(a.mixed.arr.length, 3);
+    assert.equal(a.mixed.arr[1].x, 1);
+    assert.equal(a.mixed.arr[2], 'test');
+    assert.equal(a.mixed.arr[0][0], 10);
   });
 
-  it('increments version when $set-ing an array', function() {
-    return co(function*() {
-      const a = new BlogPost({});
-      yield a.save();
-      const b = yield BlogPost.findById(a);
+  it('increments version when $set-ing an array', async function() {
 
-      assert.equal(a._doc.__v, 0);
+    const a = new BlogPost({});
+    await a.save();
+    const b = await BlogPost.findById(a);
 
-      a.comments.addToSet({ title: 'monkey' });
-      b.markModified('comments');
+    assert.equal(a._doc.__v, 0);
 
-      const d = b.$__delta();
-      assert.ok(d[1].$inc, 'a $set of an array should trigger versioning');
+    a.comments.addToSet({ title: 'monkey' });
+    b.markModified('comments');
 
-      yield a.save();
-      const err = yield b.save().then(() => null, err => err);
+    const d = b.$__delta();
+    assert.ok(d[1].$inc, 'a $set of an array should trigger versioning');
 
-      assert.ok(err instanceof VersionError);
-      assert.ok(err.stack.indexOf('versioning.test.js') !== -1);
-      assert.ok(/No matching document/.test(err), 'changes to b should not be applied');
-      assert.equal(a.comments.length, 1);
-    });
+    await a.save();
+    const err = await b.save().then(() => null, err => err);
+
+    assert.ok(err instanceof VersionError);
+    assert.ok(err.stack.indexOf('versioning.test.js') !== -1);
+    assert.ok(/No matching document/.test(err), 'changes to b should not be applied');
+    assert.equal(a.comments.length, 1);
   });
 
-  it('increments version and converts to $set when mixing $shift and $addToSet', function() {
-    return co(function*() {
-      const a = new BlogPost({});
-      yield a.save();
-      const b = yield BlogPost.findById(a);
+  it('increments version and converts to $set when mixing $shift and $addToSet', async function() {
 
-      assert.equal(a._doc.__v, 0);
+    const a = new BlogPost({});
+    await a.save();
+    const b = await BlogPost.findById(a);
 
-      a.comments.addToSet({ title: 'aven' });
-      a.comments.addToSet({ title: 'avengers' });
-      let d = a.$__delta();
+    assert.equal(a._doc.__v, 0);
 
-      assert.equal(d[0].__v, undefined, 'version should not be included in where clause');
-      assert.ok(!d[1].$set);
-      assert.ok(d[1].$addToSet);
-      assert.ok(d[1].$addToSet.comments);
+    a.comments.addToSet({ title: 'aven' });
+    a.comments.addToSet({ title: 'avengers' });
+    let d = a.$__delta();
 
-      a.comments.$shift();
-      d = a.$__delta();
-      assert.equal(d[0].__v, 0, 'version should be included in where clause');
-      assert.ok(d[1].$set, 'two differing atomic ops on same path should create a $set');
-      assert.ok(d[1].$inc, 'a $set of an array should trigger versioning');
-      assert.ok(!d[1].$addToSet);
+    assert.equal(d[0].__v, undefined, 'version should not be included in where clause');
+    assert.ok(!d[1].$set);
+    assert.ok(d[1].$addToSet);
+    assert.ok(d[1].$addToSet.comments);
 
-      yield [a.save(), b.save()];
-    });
+    a.comments.$shift();
+    d = a.$__delta();
+    assert.equal(d[0].__v, 0, 'version should be included in where clause');
+    assert.ok(d[1].$set, 'two differing atomic ops on same path should create a $set');
+    assert.ok(d[1].$inc, 'a $set of an array should trigger versioning');
+    assert.ok(!d[1].$addToSet);
+
+    await Promise.all([a.save(), b.save()]);
   });
 
-  it('should not increment version for non-versioned fields', function() {
-    return co(function*() {
-      const a = new BlogPost({});
-      yield a.save();
-      const b = yield BlogPost.findById(a);
+  it('should not increment version for non-versioned fields', async function() {
 
-      assert.equal(a._doc.__v, 0);
+    const a = new BlogPost({});
+    await a.save();
+    const b = await BlogPost.findById(a);
 
-      a.dontVersionMe.push('value1');
-      b.dontVersionMe.push('value2');
-      yield [a.save(), b.save()];
+    assert.equal(a._doc.__v, 0);
 
-      assert.equal(a._doc.__v, 0);
-    });
+    a.dontVersionMe.push('value1');
+    b.dontVersionMe.push('value2');
+    await Promise.all([a.save(), b.save()]);
+
+    assert.equal(a._doc.__v, 0);
   });
 
-  it('should not increment version for non-versioned sub-document fields', function() {
-    return co(function*() {
-      const a = new BlogPost({ comments: [{ title: 'test' }] });
-      yield a.save();
-      const b = yield BlogPost.findById(a);
+  it('should not increment version for non-versioned sub-document fields', async function() {
 
-      assert.equal(a._doc.__v, 0);
+    const a = new BlogPost({ comments: [{ title: 'test' }] });
+    await a.save();
+    const b = await BlogPost.findById(a);
 
-      a.comments[0].dontVersionMeEither.push('value1');
-      b.comments[0].dontVersionMeEither.push('value2');
-      yield [a.save(), b.save()];
+    assert.equal(a._doc.__v, 0);
 
-      assert.equal(a._doc.__v, 0);
-    });
+    a.comments[0].dontVersionMeEither.push('value1');
+    b.comments[0].dontVersionMeEither.push('value2');
+    await Promise.all([a.save(), b.save()]);
+
+    assert.equal(a._doc.__v, 0);
   });
 
-  describe('versioning is off', function() {
-    it('when { safe: false } is set (gh-1520)', function(done) {
-      const schema1 = new Schema({ title: String }, { safe: false });
-      assert.equal(schema1.options.versionKey, false);
-      done();
-    });
-    it('when { safe: { w: 0 }} is set (gh-1520)', function(done) {
-      const schema1 = new Schema({ title: String }, { safe: { w: 0 } });
-      assert.equal(schema1.options.versionKey, false);
-      done();
-    });
+  it('should persist correctly when optimisticConcurrency is true gh-10128', async function() {
+    const thingSchema = new Schema({ price: Number }, { optimisticConcurrency: true });
+    const Thing = db.model('Thing', thingSchema);
+
+    const thing = await Thing.create({ price: 1 });
+    await thing.save();
+    assert.equal(thing.__v, 0);
+    const thing_1 = await Thing.findById(thing.id);
+    const thing_2 = await Thing.findById(thing.id);
+    thing_1.set({ price: 2 });
+    await thing_1.save();
+    assert.equal(thing_1.__v, 1);
+    thing_2.set({ price: 1 });
+    const err = await thing_2.save().then(() => null, err => err);
+    assert.equal(err.name, 'VersionError');
   });
 
-  it('gh-1898', function(done) {
+  it('throws VersionError when saving with no changes and optimistic concurrency is true (gh-11295)', async function() {
+    const robotSchema = new mongoose.Schema({
+      name: String
+    }, { optimisticConcurrency: true });
+
+    const Robot = db.model('Robot', robotSchema);
+
+    const entry = await Robot.create({ name: 'WallE' });
+    const changes = await Robot.findOne({ _id: entry._id }).orFail().exec();
+    const other = await Robot.findOne({ _id: entry._id }).orFail().exec();
+    changes.name = 'John';
+    await changes.save();
+
+    other.name = 'WallE';
+    const err = await other.save().then(() => null, err => err);
+    assert.equal(err.name, 'VersionError');
+  });
+
+  it('should support optimisticConcurrency being an array of strings', async function() {
+    const thingSchema = new Schema({ price: Number, name: String }, { optimisticConcurrency: ['price', 'name'] });
+    const Thing = db.model('Thing', thingSchema);
+
+    const thing = await Thing.create({ price: 1, name: 'Test' });
+    await thing.save();
+    assert.equal(thing.__v, 0);
+    const thing_1 = await Thing.findById(thing.id);
+    const thing_2 = await Thing.findById(thing.id);
+    thing_1.set({ price: 2, name: 'Testerson' });
+    await thing_1.save();
+    assert.equal(thing_1.__v, 1);
+    thing_2.set({ price: 1, name: 'Test' });
+    const err = await thing_2.save().then(() => null, err => err);
+    assert.ok(!err);
+  });
+
+  it('gh-1898', async function() {
     const schema = new Schema({ tags: [String], name: String });
 
     const M = db.model('Test', schema);
 
     const m = new M({ tags: ['eggs'] });
 
-    m.save(function(err) {
-      assert.ifError(err);
+    await m.save();
+    m.tags.push('bacon');
+    m.name = 'breakfast';
+    m.tags[0] = 'eggs';
+    m.markModified('tags.0');
 
-      m.tags.push('bacon');
-      m.name = 'breakfast';
-      m.tags[0] = 'eggs';
-      m.markModified('tags.0');
-
-      assert.equal(m.$__where(m.$__delta()[0]).__v, 0);
-      assert.equal(m.$__delta()[1].$inc.__v, 1);
-      done();
-    });
+    assert.equal(m.$__where(m.$__delta()[0]).__v, 0);
+    assert.equal(m.$__delta()[1].$inc.__v, 1);
   });
 
-  it('can remove version key from toObject() (gh-2675)', function(done) {
+  it('can remove version key from toObject() (gh-2675)', async function() {
     const schema = new Schema({ name: String });
     const M = db.model('Test', schema);
 
     const m = new M();
-    m.save(function(err, m) {
-      assert.ifError(err);
-      let obj = m.toObject();
-      assert.equal(obj.__v, 0);
-      obj = m.toObject({ versionKey: false });
-      assert.equal(obj.__v, undefined);
-      done();
-    });
+    await m.save();
+    let obj = m.toObject();
+    assert.equal(obj.__v, 0);
+    obj = m.toObject({ versionKey: false });
+    assert.equal(obj.__v, undefined);
   });
 
-  it('pull doesnt add version where clause (gh-6190)', function() {
+  it('pull doesnt add version where clause (gh-6190)', async function() {
     const User = db.model('User', new mongoose.Schema({
       unreadPosts: [{ type: mongoose.Schema.Types.ObjectId }]
     }));
 
-    return co(function*() {
-      const id1 = new mongoose.Types.ObjectId();
-      const id2 = new mongoose.Types.ObjectId();
-      const doc = yield User.create({
-        unreadPosts: [id1, id2]
-      });
 
-      const doc1 = yield User.findById(doc._id);
-      const doc2 = yield User.findById(doc._id);
-
-      doc1.unreadPosts.pull(id1);
-      yield doc1.save();
-
-      doc2.unreadPosts.pull(id2);
-      yield doc2.save();
-
-      const doc3 = yield User.findById(doc._id);
-      assert.equal(doc3.unreadPosts.length, 0);
+    const id1 = new mongoose.Types.ObjectId();
+    const id2 = new mongoose.Types.ObjectId();
+    const doc = await User.create({
+      unreadPosts: [id1, id2]
     });
+
+    const doc1 = await User.findById(doc._id);
+    const doc2 = await User.findById(doc._id);
+
+    doc1.unreadPosts.pull(id1);
+    await doc1.save();
+
+    doc2.unreadPosts.pull(id2);
+    await doc2.save();
+
+    const doc3 = await User.findById(doc._id);
+    assert.equal(doc3.unreadPosts.length, 0);
   });
 
-  it('copying doc works (gh-5779)', function(done) {
+  it('copying doc works (gh-5779)', async function() {
     const schema = new Schema({ subdocs: [{ a: Number }] });
     const M = db.model('Test', schema);
     const m = new M({ subdocs: [] });
-    let m2;
-
-    m.save().
-      then(function() {
-        m2 = new M(m);
-        m2.subdocs.push({ a: 2 });
-        return m2.save();
-      }).
-      then(function() {
-        m2.subdocs[0].a = 3;
-        return m2.save();
-      }).
-      then(function() {
-        assert.equal(m2.subdocs[0].a, 3);
-        return M.findById(m._id);
-      }).
-      then(function(doc) {
-        assert.equal(doc.subdocs[0].a, 3);
-        done();
-      }).
-      catch(done);
+    await m.save();
+    const m2 = new M(m);
+    m2.subdocs.push({ a: 2 });
+    await m2.save();
+    m2.subdocs[0].a = 3;
+    await m2.save();
+    assert.equal(m2.subdocs[0].a, 3);
+    const doc = await M.findById(m._id);
+    assert.equal(doc.subdocs[0].a, 3);
   });
 
-  it('optimistic concurrency (gh-9001) (gh-5424)', function() {
+  it('optimistic concurrency (gh-9001) (gh-5424)', async function() {
     const schema = new Schema({ name: String }, { optimisticConcurrency: true });
     const M = db.model('Test', schema);
 
     const doc = new M({ name: 'foo' });
 
-    return co(function*() {
-      yield doc.save();
 
-      const d1 = yield M.findOne();
-      const d2 = yield M.findOne();
+    await doc.save();
 
-      d1.name = 'bar';
-      yield d1.save();
+    const d1 = await M.findOne();
+    const d2 = await M.findOne();
 
-      d2.name = 'qux';
-      const err = yield d2.save().then(() => null, err => err);
-      assert.ok(err);
-      assert.equal(err.name, 'VersionError');
+    d1.name = 'bar';
+    await d1.save();
+
+    d2.name = 'qux';
+    const err = await d2.save().then(() => null, err => err);
+    assert.ok(err);
+    assert.equal(err.name, 'VersionError');
+  });
+
+  it('adds version to filter if pushing to a nested array (gh-11108)', async function() {
+    const Test = db.model('Test', Schema({ comments: [{ likedBy: [String] }] }));
+    const entry = await Test.create({
+      comments: [{ likedBy: ['Friends', 'Family'] }]
     });
+
+    const post1 = await Test.findById(entry._id).exec();
+    const post2 = await Test.findById(entry._id).exec();
+
+    post1.comments = [{ likedBy: ['test'] }];
+    await post1.save();
+
+    let comment = post2.comments[0];
+    comment.likedBy.push('Some User');
+
+    const err = await post2.save().then(() => null, err => err);
+    assert.equal(err.name, 'VersionError');
+
+    const post3 = await Test.findById(entry._id).exec();
+    comment = post3.comments[0];
+    comment.likedBy.push('Some User');
+    await post3.save();
+    assert.equal(post3.__v, 2);
+  });
+
+  it('can store version key in nested property (gh-10980)', async function() {
+    const mongooseSchema = Schema({
+      name: String,
+      meta: {
+        test: String
+      }
+    }, { versionKey: 'meta.versionKey' });
+    const Model = db.model('Test', mongooseSchema);
+
+    const doc = new Model({ name: 'test' });
+    await doc.save();
+
+    assert.strictEqual(doc.meta.versionKey, 0);
+    const fromDb = await Model.findById(doc);
+    assert.strictEqual(fromDb.meta.versionKey, 0);
+  });
+
+  describe('version mode accumulation (gh-15888)', function() {
+    const VERSION_ALL = mongoose.Document.VERSION_ALL;
+
+    it('combines VERSION_INC and VERSION_WHERE when pull and index set happen together', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+
+      // Act
+      user.items.pull(user.items[0]._id); // VERSION_INC ($pull is an array atomic op)
+      user.tags[0] = 'modified'; // VERSION_WHERE (modifying array element by index)
+      user.$__delta();
+      const versionMode = user.$__.version;
+      await user.save();
+
+      // Assert
+      const afterSave = await User.findById(user._id);
+      assert.strictEqual(versionMode, VERSION_ALL, 'version mode should be VERSION_ALL (3)');
+      assert.strictEqual(user.__v, 1, '__v should be incremented in memory after pull');
+      assert.strictEqual(afterSave.__v, 1, '__v should be incremented in db after pull');
+    });
+
+    it('rejects stale update after pull when another client modifies by index', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      const clientA = await User.findById(user._id);
+      const clientB = await User.findById(user._id);
+
+      // Act - Client A: pull + set index
+      clientA.items.pull(clientA.items[0]._id); // VERSION_INC
+      clientA.tags[0] = 'modified'; // VERSION_WHERE
+      await clientA.save();
+
+      // Client B: stale view, updates by index
+      clientB.items[1].name = 'updated'; // VERSION_WHERE
+      const err = await clientB.save().then(() => null, err => err);
+
+      // Assert
+      assert.ok(err, 'save should throw VersionError due to stale __v');
+      assert.strictEqual(err.name, 'VersionError');
+    });
+
+    it('combines VERSION_WHERE and VERSION_INC regardless of operation order', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+
+      // Act - set index first (VERSION_WHERE) then push (VERSION_INC)
+      user.tags[0] = 'modified'; // VERSION_WHERE
+      user.items.push({ name: 'item4' }); // VERSION_INC
+      user.$__delta();
+      const versionMode = user.$__.version;
+      await user.save();
+
+      // Assert
+      const afterSave = await User.findById(user._id);
+      assert.strictEqual(versionMode, VERSION_ALL, 'version mode should be VERSION_ALL (3)');
+      assert.strictEqual(afterSave.__v, 1, '__v should be incremented after push');
+    });
+
+    async function createTestContext() {
+      const schema = new Schema({
+        items: [{ name: String }],
+        tags: [String]
+      });
+      const User = db.model('Test', schema);
+      const user = await User.create({
+        items: [{ name: 'item1' }, { name: 'item2' }, { name: 'item3' }],
+        tags: ['tag1', 'tag2']
+      });
+      return { User, user };
+    }
+  });
+
+  describe('optimisticConcurrency (gh-15912) (gh-15915)', function() {
+    const VERSION_ALL = mongoose.Document.VERSION_ALL;
+
+    describe('optimisticConcurrency: true', function() {
+      it('sets VERSION_ALL when modifying any field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: true });
+
+        // Act
+        user.balance = 200;
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('sets VERSION_ALL when modifying array field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: true });
+
+        // Act
+        user.friends.push('c');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+    });
+
+    describe('optimisticConcurrency: string[]', function() {
+      it('sets VERSION_ALL when modifying specified field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: ['balance'] });
+
+        // Act
+        user.balance = 200;
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('sets VERSION_ALL when modifying specified array field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: ['friends'] });
+
+        // Act
+        user.friends.push('c');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('does not set version when modifying non-specified field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: ['balance'] });
+
+        // Act
+        user.name = 'changed';
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, undefined);
+      });
+
+      it('does not set version when modifying non-specified array field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: ['balance'] });
+
+        // Act
+        user.friends.push('new-friend');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, undefined);
+      });
+
+      it('sets VERSION_ALL when modifying a map key matching a wildcard path (gh-16383)', async function() {
+        // Arrange
+        const userSchema = new Schema({
+          settings: { type: Map, of: String },
+          balance: Number
+        }, { optimisticConcurrency: ['settings.$*'] });
+        const User = db.model('Test', userSchema);
+        const user = await User.create({ settings: { theme: 'dark' }, balance: 100 });
+
+        // Act
+        user.settings.set('theme', 'light');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('sets VERSION_ALL when modifying array element path matching a subdocument path (gh-16383)', async function() {
+        // Arrange
+        const postSchema = new Schema({
+          comments: [{ text: String, author: String }],
+          title: String
+        }, { optimisticConcurrency: ['comments.text'] });
+        const Post = db.model('Test', postSchema);
+        const post = await Post.create({ title: 'Hello', comments: [{ text: 'First' }] });
+
+        // Act
+        post.comments[0].text = 'Edited';
+        post.$__delta();
+
+        // Assert
+        assert.strictEqual(post.$__.version, VERSION_ALL);
+      });
+
+      it('does not set version when modifying non-specified subdocument path (gh-16383)', async function() {
+        // Arrange
+        const postSchema = new Schema({
+          comments: [{ text: String, author: String }],
+          title: String
+        }, { optimisticConcurrency: ['comments.text'] });
+        const Post = db.model('Test', postSchema);
+        const post = await Post.create({ title: 'Hello', comments: [{ text: 'First', author: 'A' }] });
+
+        // Act
+        post.comments[0].author = 'B';
+        post.$__delta();
+
+        // Assert
+        assert.strictEqual(post.$__.version, undefined);
+      });
+
+      it('does not set version when modifying non-specified field with wildcard path (gh-16383)', async function() {
+        // Arrange
+        const userSchema = new Schema({
+          settings: { type: Map, of: String },
+          balance: Number
+        }, { optimisticConcurrency: ['settings.$*'] });
+        const User = db.model('Test', userSchema);
+        const user = await User.create({ settings: { theme: 'dark' }, balance: 100 });
+
+        // Act
+        user.balance = 200;
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, undefined);
+      });
+    });
+
+    describe('optimisticConcurrency: { exclude: [] }', function() {
+      it('sets VERSION_ALL when modifying non-excluded field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: { exclude: ['name'] } });
+
+        // Act
+        user.balance = 200;
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('sets VERSION_ALL when modifying non-excluded array field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: { exclude: ['name'] } });
+
+        // Act
+        user.friends.push('c');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('does not set version when modifying only excluded field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: { exclude: ['name'] } });
+
+        // Act
+        user.name = 'changed';
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, undefined);
+      });
+
+      it('does not set version when modifying only excluded array field', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: { exclude: ['friends'] } });
+
+        // Act
+        user.friends.push('new-friend');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, undefined);
+      });
+
+      it('sets VERSION_ALL when modifying both excluded and non-excluded fields', async function() {
+        // Arrange
+        const { user } = await createTestContext({ optimisticConcurrency: { exclude: ['name'] } });
+
+        // Act
+        user.name = 'changed';
+        user.balance = 200;
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, VERSION_ALL);
+      });
+
+      it('does not set version when modifying only a map key excluded by wildcard path (gh-16383)', async function() {
+        // Arrange
+        const userSchema = new Schema({
+          settings: { type: Map, of: String },
+          balance: Number
+        }, { optimisticConcurrency: { exclude: ['settings.$*'] } });
+        const User = db.model('Test', userSchema);
+        const user = await User.create({ settings: { theme: 'dark' }, balance: 100 });
+
+        // Act
+        user.settings.set('theme', 'light');
+        user.$__delta();
+
+        // Assert
+        assert.strictEqual(user.$__.version, undefined);
+      });
+    });
+
+    async function createTestContext({ optimisticConcurrency }) {
+      const schema = new Schema({
+        name: String,
+        balance: Number,
+        friends: [String]
+      }, { optimisticConcurrency });
+
+      const User = db.model('Test', schema);
+
+      const user = await User.create({
+        name: 'test',
+        balance: 100,
+        friends: ['alice', 'bob']
+      });
+
+      return { user };
+    }
   });
 });

@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('assert');
+
+require('../common'); // required for side-effect setup (so that the default driver is set-up)
 const isIndexEqual = require('../../lib/helpers/indexes/isIndexEqual');
 
 describe('isIndexEqual', function() {
@@ -17,7 +19,6 @@ describe('isIndexEqual', function() {
       unique: true,
       key: { username: 1 },
       name: 'username_1',
-      background: true,
       collation: {
         locale: 'en',
         caseLevel: false,
@@ -41,7 +42,6 @@ describe('isIndexEqual', function() {
       unique: true,
       key: { username: 1 },
       name: 'username_1',
-      background: true,
       collation: {
         locale: 'en',
         caseLevel: false,
@@ -55,6 +55,29 @@ describe('isIndexEqual', function() {
     assert.ok(!isIndexEqual(key, options, dbIndex));
   });
 
+  it('treats simple collation as equivalent to an omitted collation', function() {
+    const withSimple = {
+      key: { username: 1 },
+      name: 'username_1',
+      collation: { locale: 'simple' }
+    };
+    const withoutCollation = {
+      key: { username: 1 },
+      name: 'username_1'
+    };
+    const simpleOptions = { collation: { locale: 'simple' } };
+
+    assert.ok(isIndexEqual({ username: 1 }, {}, withSimple));
+    assert.ok(!isIndexEqual({ email: 1 }, {}, withSimple));
+    assert.ok(isIndexEqual({ username: 1 }, simpleOptions, withoutCollation));
+    assert.ok(isIndexEqual({ username: 1 }, simpleOptions, withSimple));
+    assert.ok(!isIndexEqual({ username: 1 }, { collation: { locale: 'en' } }, withoutCollation));
+    assert.ok(!isIndexEqual({ username: 1 }, simpleOptions, {
+      ...withoutCollation,
+      collation: { locale: 'en', strength: 2 }
+    }));
+  });
+
   it('handles text indexes (gh-9225)', function() {
     const key = { name: 'text' };
     const options = {};
@@ -63,7 +86,6 @@ describe('isIndexEqual', function() {
       key: { _fts: 'text', _ftsx: 1 },
       name: 'name_text',
       ns: 'test.tests',
-      background: true,
       weights: { name: 1 },
       default_language: 'english',
       language_override: 'language',

@@ -7,7 +7,8 @@
 const start = require('./common');
 
 const assert = require('assert');
-const co = require('co');
+const { once } = require('events');
+const stream = require('stream');
 
 const Aggregate = require('../lib/aggregate');
 
@@ -18,7 +19,7 @@ const Schema = mongoose.Schema;
  * Test data
  */
 
-function setupData(db, callback) {
+async function setupData(db) {
   const EmployeeSchema = new Schema({
     name: String,
     sal: Number,
@@ -27,7 +28,6 @@ function setupData(db, callback) {
     reportsTo: String
   });
 
-  let saved = 0;
   const emps = [
     { name: 'Alice', sal: 18000, dept: 'sales', customers: ['Eve', 'Fred'] },
     { name: 'Bob', sal: 15000, dept: 'sales', customers: ['Gary', 'Herbert', 'Isaac'], reportsTo: 'Alice' },
@@ -36,17 +36,9 @@ function setupData(db, callback) {
   ];
   const Employee = db.model('Employee', EmployeeSchema);
 
-  Employee.deleteMany({}, function() {
-    emps.forEach(function(data) {
-      const emp = new Employee(data);
+  await Employee.deleteMany({});
 
-      emp.save(function() {
-        if (++saved === emps.length) {
-          callback();
-        }
-      });
-    });
-  });
+  await Employee.create(emps);
 }
 
 /**
@@ -54,27 +46,27 @@ function setupData(db, callback) {
  *
  * @param {String} semver, `3.4`, specify minimum compatible mongod version
  * @param {Object} ctx, `this`, so that mocha tests can be skipped
- * @param {Function} done
- * @return {Void}
+ * @return {Promise<void>}
  */
-function onlyTestAtOrAbove(semver, ctx, done) {
-  start.mongodVersion(function(err, version) {
-    if (err) {
-      done(err);
-      return;
-    }
+async function onlyTestAtOrAbove(semver, ctx) {
+  const versions = {
+    3.4: [3, 4],
+    3.6: [3, 6]
+  };
 
-    const desired = semver.split('.').map(function(s) {
-      return parseInt(s);
-    });
+  if (semver.length !== 3 || Object.keys(versions).indexOf(semver) === -1) {
+    throw new TypeError('onlyTestAtOrAbove expects either ' + Object.keys(versions).join(', ') + ' as first parameter.');
+  }
 
-    const meetsMinimum = version[0] > desired[0] || (version[0] === desired[0] && version[1] >= desired[1]);
+  const version = await start.mongodVersion();
 
-    if (!meetsMinimum) {
-      ctx.skip();
-    }
-    done();
-  });
+  const desired = versions[semver];
+
+  const meetsMinimum = version[0] > desired[0] || (version[0] === desired[0] && version[1] >= desired[1]);
+
+  if (!meetsMinimum) {
+    ctx.skip();
+  }
 }
 
 /**
@@ -84,12 +76,12 @@ function onlyTestAtOrAbove(semver, ctx, done) {
 describe('aggregate: ', function() {
   let db;
 
-  before(function() {
+  before(function startConnection() {
     db = start();
   });
 
-  after(function(done) {
-    db.close(done);
+  after(async function closeConnection() {
+    await db.close();
   });
 
   beforeEach(() => db.deleteModel(/.*/));
@@ -296,11 +288,14 @@ describe('aggregate: ', function() {
     it('works', function() {
       const aggregate = new Aggregate();
 
-      assert.equal(aggregate.near({ a: 1 }), aggregate);
-      assert.deepEqual(aggregate._pipeline, [{ $geoNear: { a: 1 } }]);
+      assert.equal(aggregate.near({ near: { type: 'Point', coordinates: [1, 2] } }), aggregate);
+      assert.deepEqual(aggregate._pipeline, [{ $geoNear: { near: { type: 'Point', coordinates: [1, 2] } } }]);
 
-      aggregate.near({ b: 2 });
-      assert.deepEqual(aggregate._pipeline, [{ $geoNear: { a: 1 } }, { $geoNear: { b: 2 } }]);
+      aggregate.near({ near: { type: 'Point', coordinates: [3, 4] } });
+      assert.deepEqual(aggregate._pipeline, [
+        { $geoNear: { near: { type: 'Point', coordinates: [1, 2] } } },
+        { $geoNear: { near: { type: 'Point', coordinates: [3, 4] } } }
+      ]);
     });
 
     it('works with discriminators (gh-3304)', function() {
@@ -317,19 +312,19 @@ describe('aggregate: ', function() {
 
       aggregate._model = stub;
 
-      assert.equal(aggregate.near({ a: 1 }), aggregate);
+      assert.equal(aggregate.near({ near: { type: 'Point', coordinates: [1, 2] } }), aggregate);
       // Run exec so we apply discriminator pipeline
-      Aggregate._prepareDiscriminatorPipeline(aggregate);
+      Aggregate._prepareDiscriminatorPipeline(aggregate._pipeline, stub.schema);
       assert.deepEqual(aggregate._pipeline,
-        [{ $geoNear: { a: 1, query: { __t: 'subschema' } } }]);
+        [{ $geoNear: { near: { type: 'Point', coordinates: [1, 2] }, query: { __t: 'subschema' } } }]);
 
       aggregate = new Aggregate();
       aggregate._model = stub;
 
-      aggregate.near({ b: 2, query: { x: 1 } });
-      Aggregate._prepareDiscriminatorPipeline(aggregate);
+      aggregate.near({ near: { type: 'Point', coordinates: [3, 4] }, query: { x: 1 } });
+      Aggregate._prepareDiscriminatorPipeline(aggregate._pipeline, stub.schema);
       assert.deepEqual(aggregate._pipeline,
-        [{ $geoNear: { b: 2, query: { x: 1, __t: 'subschema' } } }]);
+        [{ $geoNear: { near: { type: 'Point', coordinates: [3, 4] }, query: { x: 1, __t: 'subschema' } } }]);
     });
   });
 
@@ -350,6 +345,25 @@ describe('aggregate: ', function() {
     });
   });
 
+  describe('unionWith', function() {
+    it('works', function() {
+      const aggregate = new Aggregate();
+      const obj = {
+        coll: 'users',
+        pipeline: [
+          {
+            $match: { _id: 1 }
+          }
+        ]
+      };
+
+      aggregate.unionWith(obj);
+
+      assert.equal(aggregate._pipeline.length, 1);
+      assert.deepEqual(aggregate._pipeline[0].$unionWith, obj);
+    });
+  });
+
   describe('sample', function() {
     it('works', function() {
       const aggregate = new Aggregate();
@@ -361,6 +375,44 @@ describe('aggregate: ', function() {
     });
   });
 
+  describe('densify', function() {
+    it('works', function() {
+      const aggregate = new Aggregate();
+      const obj = {
+        field: 'timestamp',
+        range: {
+          step: 1,
+          unit: 'hour',
+          bounds: [new Date('2021-05-18T00:00:00.000Z'), new Date('2021-05-18T08:00:00.000Z')]
+        }
+      };
+
+      aggregate.densify(obj);
+
+      assert.equal(aggregate._pipeline.length, 1);
+      assert.deepEqual(aggregate._pipeline[0].$densify, obj);
+    });
+  });
+
+  describe('fill', function() {
+    it('works', function() {
+      const aggregate = new Aggregate();
+      const obj = {
+        output:
+          {
+            bootsSold: { value: 0 },
+            sandalsSold: { value: 0 },
+            sneakersSold: { value: 0 }
+          }
+      };
+
+      aggregate.fill(obj);
+
+      assert.equal(aggregate._pipeline.length, 1);
+      assert.deepEqual(aggregate._pipeline[0].$fill, obj);
+    });
+  });
+
   describe('model()', function() {
     it('works', function() {
       const aggregate = new Aggregate();
@@ -369,7 +421,7 @@ describe('aggregate: ', function() {
       assert.equal(aggregate._model, null);
       assert.equal(aggregate.model(), null);
 
-      assert.equal(aggregate.model(model), aggregate);
+      assert.equal(aggregate.model(model), model);
       assert.equal(aggregate._model, model);
       assert.equal(aggregate.model(), model);
     });
@@ -396,8 +448,8 @@ describe('aggregate: ', function() {
   });
 
   describe('Mongo 3.4 operators', function() {
-    before(function(done) {
-      onlyTestAtOrAbove('3.4', this, done);
+    before(async function() {
+      await onlyTestAtOrAbove('3.4', this);
     });
 
     describe('graphLookup', function() {
@@ -440,6 +492,18 @@ describe('aggregate: ', function() {
     });
 
     describe('addFields', function() {
+      it('should throw if passed a non object', function() {
+        const aggregate = new Aggregate();
+        assert.throws(() => {aggregate.addFields('invalid');}, /Invalid addFields\(\) argument\. Must be an object/);
+      });
+      it('should throw if passed null', function() {
+        const aggregate = new Aggregate();
+        assert.throws(() => {aggregate.addFields(null);}, /Invalid addFields\(\) argument\. Must be an object/);
+      });
+      it('should throw if passed an Array', function() {
+        const aggregate = new Aggregate();
+        assert.throws(() => {aggregate.addFields([]);}, /Invalid addFields\(\) argument\. Must be an object/);
+      });
       it('(object)', function() {
         const aggregate = new Aggregate();
 
@@ -554,92 +618,70 @@ describe('aggregate: ', function() {
   });
 
   describe('exec', function() {
-    beforeEach(function(done) {
-      setupData(db, done);
+    beforeEach(async function() {
+      this.timeout(15000);
+      await setupData(db);
     });
 
-    it('project', function(done) {
-      const aggregate = new Aggregate();
+    it('project', async function() {
+      const aggregate = new Aggregate([], db.model('Employee'));
 
-      aggregate.
-        model(db.model('Employee')).
-        project({ sal: 1, sal_k: { $divide: ['$sal', 1000] } }).
-        exec(function(err, docs) {
-          assert.ifError(err);
-          docs.forEach(function(doc) {
-            assert.equal(doc.sal / 1000, doc.sal_k);
-          });
+      const docs = await aggregate.project({ sal: 1, sal_k: { $divide: ['$sal', 1000] } }).exec();
 
-          done();
-        });
+      docs.forEach(function(doc) {
+        assert.equal(doc.sal / 1000, doc.sal_k);
+      });
+
     });
 
-    it('group', function(done) {
-      const aggregate = new Aggregate();
+    it('group', async function() {
+      const aggregate = new Aggregate([], db.model('Employee'));
 
-      aggregate.
-        model(db.model('Employee')).
+      const docs = await aggregate.
         group({ _id: '$dept' }).
-        exec(function(err, docs) {
-          assert.ifError(err);
-          assert.equal(docs.length, 2);
+        exec();
 
-          const depts = docs.map(function(doc) {
-            return doc._id;
-          });
-          assert.notEqual(depts.indexOf('sales'), -1);
-          assert.notEqual(depts.indexOf('r&d'), -1);
-          done();
-        });
+      assert.equal(docs.length, 2);
+
+      const depts = docs.map((doc) => doc._id);
+      assert.notEqual(depts.indexOf('sales'), -1);
+      assert.notEqual(depts.indexOf('r&d'), -1);
     });
 
-    it('skip', function(done) {
-      const aggregate = new Aggregate();
+    it('skip', async function() {
+      const aggregate = new Aggregate([], db.model('Employee'));
 
-      aggregate.
-        model(db.model('Employee')).
+      const docs = await aggregate.
         skip(1).
-        exec(function(err, docs) {
-          assert.ifError(err);
-          assert.equal(docs.length, 3);
+        exec();
 
-          done();
-        });
+      assert.equal(docs.length, 3);
     });
 
-    it('limit', function(done) {
-      const aggregate = new Aggregate();
+    it('limit', async function() {
+      const aggregate = new Aggregate([], db.model('Employee'));
 
-      aggregate.
-        model(db.model('Employee')).
+      const docs = await aggregate.
         limit(3).
-        exec(function(err, docs) {
-          assert.ifError(err);
-          assert.equal(docs.length, 3);
+        exec();
 
-          done();
-        });
+      assert.equal(docs.length, 3);
     });
 
-    it('unwind', function(done) {
-      const aggregate = new Aggregate();
+    it('unwind', async function() {
+      const aggregate = new Aggregate([], db.model('Employee'));
 
-      aggregate.
-        model(db.model('Employee')).
+      const docs = await aggregate.
         unwind('customers').
-        exec(function(err, docs) {
-          assert.ifError(err);
-          assert.equal(docs.length, 5);
+        exec();
 
-          done();
-        });
+      assert.equal(docs.length, 5);
     });
 
     it('unwind with obj', function() {
       const aggregate = new Aggregate();
 
       const agg = aggregate.
-        model(db.model('Employee')).
         unwind({ path: '$customers', preserveNullAndEmptyArrays: true });
 
       assert.equal(agg._pipeline.length, 1);
@@ -653,7 +695,6 @@ describe('aggregate: ', function() {
       let threw = false;
       try {
         aggregate.
-          model(db.model('Employee')).
           unwind(36);
       } catch (err) {
         assert.ok(err.message.indexOf('to unwind()') !== -1);
@@ -662,329 +703,258 @@ describe('aggregate: ', function() {
       assert.ok(threw);
     });
 
-    it('match', function(done) {
-      const aggregate = new Aggregate();
+    it('match', async function() {
+      const aggregate = new Aggregate([], db.model('Employee'));
 
-      aggregate.
-        model(db.model('Employee')).
-        match({ sal: { $gt: 15000 } }).
-        exec(function(err, docs) {
-          assert.ifError(err);
-          assert.equal(docs.length, 1);
+      const docs = await aggregate.match({ sal: { $gt: 15000 } });
 
-          done();
-        });
+      assert.equal(docs.length, 1);
     });
 
-    it('sort', function(done) {
-      const aggregate = new Aggregate();
+    it('sort', async function() {
+      const aggregate = new Aggregate([], db.model('Employee'));
 
-      aggregate.
-        model(db.model('Employee')).
-        sort('sal').
-        exec(function(err, docs) {
-          assert.ifError(err);
-          assert.equal(docs[0].sal, 14000);
+      const docs = await aggregate.sort('sal');
 
-          done();
-        });
+      assert.equal(docs[0].sal, 14000);
     });
 
-    it('graphLookup', function(done) {
+    it('graphLookup', async function() {
       const _this = this;
-      start.mongodVersion(function(err, version) {
-        if (err) {
-          done(err);
-          return;
-        }
-        const mongo34 = version[0] > 3 || (version[0] === 3 && version[1] >= 4);
-        if (!mongo34) {
-          _this.skip();
-        }
-        test();
-      });
+      const version = await start.mongodVersion();
 
-      function test() {
-        const aggregate = new Aggregate();
-
-        aggregate.
-          model(db.model('Employee')).
-          graphLookup({
-            from: 'Employee',
-            startWith: '$reportsTo',
-            connectFromField: 'reportsTo',
-            connectToField: 'name',
-            as: 'employeeHierarchy'
-          }).
-          sort({ name: 1 }).
-          exec(function(err, docs) {
-            if (err) {
-              return done(err);
-            }
-            const lowest = docs[3];
-            assert.equal(lowest.name, 'Dave');
-            assert.equal(lowest.employeeHierarchy.length, 3);
-
-            // First result in array is max depth result
-            const names = lowest.employeeHierarchy.map(function(doc) {
-              return doc.name;
-            }).sort();
-            assert.equal(names[0], 'Alice');
-            assert.equal(names[1], 'Bob');
-            assert.equal(names[2], 'Carol');
-            done();
-          });
+      const mongo34 = version[0] > 3 || (version[0] === 3 && version[1] >= 4);
+      if (!mongo34) {
+        _this.skip();
       }
+
+      const aggregate = new Aggregate([], db.model('Employee'));
+
+      const docs = await aggregate.
+        graphLookup({
+          from: 'Employee',
+          startWith: '$reportsTo',
+          connectFromField: 'reportsTo',
+          connectToField: 'name',
+          as: 'employeeHierarchy'
+        }).
+        sort({ name: 1 }).
+        exec();
+
+      const lowest = docs[3];
+      assert.equal(lowest.name, 'Dave');
+      assert.equal(lowest.employeeHierarchy.length, 3);
+
+      // First result in array is max depth result
+      const names = lowest.employeeHierarchy.map((doc) => doc.name).sort();
+      assert.equal(names[0], 'Alice');
+      assert.equal(names[1], 'Bob');
+      assert.equal(names[2], 'Carol');
     });
 
-    it('facet', function(done) {
+    it('facet', async function() {
       const _this = this;
-      start.mongodVersion(function(err, version) {
-        if (err) {
-          done(err);
-          return;
-        }
-        const mongo34 = version[0] > 3 || (version[0] === 3 && version[1] >= 4);
-        if (!mongo34) {
-          _this.skip();
-        }
-        test();
-      });
+      const version = await start.mongodVersion();
 
-      function test() {
-        const aggregate = new Aggregate();
-
-        aggregate.
-          model(db.model('Employee')).
-          facet({
-            departments: [
-              {
-                $group: { _id: '$dept', count: { $sum: 1 } }
-              }
-            ],
-            employeesPerCustomer: [
-              { $unwind: '$customers' },
-              { $sortByCount: '$customers' },
-              { $sort: { _id: 1 } }
-            ]
-          }).
-          exec(function(error, docs) {
-            if (error) {
-              return done(error);
-            }
-            assert.deepEqual(docs[0].departments.map(d => d.count), [2, 2]);
-
-            assert.deepEqual(docs[0].employeesPerCustomer, [
-              { _id: 'Eve', count: 1 },
-              { _id: 'Fred', count: 1 },
-              { _id: 'Gary', count: 1 },
-              { _id: 'Herbert', count: 1 },
-              { _id: 'Isaac', count: 1 }
-            ]);
-            done();
-          });
+      const mongo34 = version[0] > 3 || (version[0] === 3 && version[1] >= 4);
+      if (!mongo34) {
+        _this.skip();
       }
+
+
+      const aggregate = new Aggregate([], db.model('Employee'));
+
+      const docs = await aggregate.
+        facet({
+          departments: [
+            {
+              $group: { _id: '$dept', count: { $sum: 1 } }
+            }
+          ],
+          employeesPerCustomer: [
+            { $unwind: '$customers' },
+            { $sortByCount: '$customers' },
+            { $sort: { _id: 1 } }
+          ]
+        }).
+        exec();
+
+      assert.deepEqual(docs[0].departments.map(d => d.count), [2, 2]);
+
+      assert.deepEqual(docs[0].employeesPerCustomer, [
+        { _id: 'Eve', count: 1 },
+        { _id: 'Fred', count: 1 },
+        { _id: 'Gary', count: 1 },
+        { _id: 'Herbert', count: 1 },
+        { _id: 'Isaac', count: 1 }
+      ]);
     });
 
-    it('complex pipeline', function(done) {
-      const aggregate = new Aggregate();
+    it('complex pipeline', async function() {
+      const aggregate = new Aggregate([], db.model('Employee'));
 
-      aggregate.
-        model(db.model('Employee')).
+      const docs = await aggregate.
         match({ sal: { $lt: 16000 } }).
         unwind('customers').
         project({ emp: '$name', cust: '$customers' }).
         sort('-cust').
         skip(2).
-        exec(function(err, docs) {
-          assert.ifError(err);
-          assert.equal(docs.length, 1);
-          assert.equal(docs[0].cust, 'Gary');
-          assert.equal(docs[0].emp, 'Bob');
+        exec();
 
-          done();
-        });
+      assert.equal(docs.length, 1);
+      assert.equal(docs[0].cust, 'Gary');
+      assert.equal(docs[0].emp, 'Bob');
     });
 
     it('pipeline() (gh-5825)', function() {
       const aggregate = new Aggregate();
 
       const pipeline = aggregate.
-        model(db.model('Employee')).
         match({ sal: { $lt: 16000 } }).
         pipeline();
 
       assert.deepEqual(pipeline, [{ $match: { sal: { $lt: 16000 } } }]);
     });
 
-    it('explain()', function(done) {
+    it('pipelineForUnionWith() returns pipeline for valid unionWith subpipeline', function() {
       const aggregate = new Aggregate();
-      start.mongodVersion(function(err, version) {
-        if (err) {
-          done(err);
-          return;
-        }
-        const mongo26 = version[0] > 2 || (version[0] === 2 && version[1] >= 6);
-        if (!mongo26) {
-          done();
-          return;
-        }
 
-        aggregate.
-          model(db.model('Employee')).
-          match({ sal: { $lt: 16000 } }).
-          explain(function(err1, output) {
-            assert.ifError(err1);
-            assert.ok(output);
-            // make sure we got explain output
-            assert.ok(output.stages || output.queryPlanner);
+      const pipeline = aggregate.
+        match({ sal: { $lt: 16000 } }).
+        pipelineForUnionWith();
 
-            done();
-          });
-      });
+      assert.deepEqual(pipeline, [{ $match: { sal: { $lt: 16000 } } }]);
+    });
+
+    it('pipelineForUnionWith() throws if pipeline contains $out or $merge', function() {
+      const aggregateWithOut = new Aggregate().append({ $match: { sal: { $lt: 16000 } } }, { $out: 'test' });
+      assert.throws(() => aggregateWithOut.pipelineForUnionWith(), /cannot include `\$out` or `\$merge`/);
+
+      const aggregateWithMerge = new Aggregate().append({ $match: { sal: { $lt: 16000 } } }, { $merge: { into: 'test' } });
+      assert.throws(() => aggregateWithMerge.pipelineForUnionWith(), /cannot include `\$out` or `\$merge`/);
+    });
+
+    it('explain()', async function() {
+      const aggregate = new Aggregate([], db.model('Employee'));
+
+      const output = await aggregate.
+        match({ sal: { $lt: 16000 } }).
+        explain();
+
+      assert.ok(output);
+      // make sure we got explain output
+      assert.ok(output.stages || output.queryPlanner);
     });
 
     describe('error when empty pipeline', function() {
       it('without a callback', function() {
-        const agg = new Aggregate;
+        const agg = new Aggregate([], db.model('Employee'));
 
-        agg.model(db.model('Employee'));
         const promise = agg.exec();
-        assert.ok(promise instanceof mongoose.Promise);
+        assert.ok(promise instanceof Promise);
 
         return promise.catch(error => {
           assert.ok(error);
           assert.ok(error.message.indexOf('empty pipeline') !== -1, error.message);
         });
       });
-
-      it('with a callback', function(done) {
-        const aggregate = new Aggregate();
-
-        aggregate.model(db.model('Employee'));
-        const callback = function(err) {
-          assert.ok(err);
-          assert.equal(err.message, 'Aggregate has empty pipeline');
-          done();
-        };
-
-        aggregate.exec(callback);
-      });
     });
 
     describe('error when not bound to a model', function() {
-      it('with callback', function() {
+      it('with callback', async function() {
         const aggregate = new Aggregate();
 
         aggregate.skip(0);
-        let threw = false;
         try {
-          aggregate.exec();
+          await aggregate.exec();
+          assert.ok(false);
         } catch (error) {
-          threw = true;
           assert.equal(error.message, 'Aggregate not bound to any Model');
         }
-        assert.ok(threw);
       });
     });
 
-    it('handles aggregation options', function(done) {
-      start.mongodVersion(function(err, version) {
-        if (err) {
-          throw err;
-        }
+    it('handles aggregation options', async function() {
+      const version = await start.mongodVersion();
 
-        const m = db.model('Employee');
-        const match = { $match: { sal: { $gt: 15000 } } };
-        const pref = 'primaryPreferred';
-        const aggregate = m.aggregate([match]).read(pref);
-        const mongo26_or_greater = version[0] > 2 || (version[0] === 2 && version[1] >= 6);
-        const mongo32_or_greater = version[0] > 3 || (version[0] === 3 && version[1] >= 2);
+      const m = db.model('Employee');
+      const match = { $match: { sal: { $gt: 15000 } } };
+      const pref = 'primaryPreferred';
+      const aggregate = m.aggregate([match]).read(pref);
+      const mongo32_or_greater = version[0] > 3 || (version[0] === 3 && version[1] >= 2);
 
-        assert.equal(aggregate.options.readPreference.mode, pref);
-        if (mongo26_or_greater) {
-          aggregate.allowDiskUse(true);
-          aggregate.option({ maxTimeMS: 1000 });
-          assert.equal(aggregate.options.allowDiskUse, true);
-          assert.equal(aggregate.options.maxTimeMS, 1000);
-        }
+      assert.equal(aggregate.options.readPreference.mode, pref);
+      aggregate.allowDiskUse(true);
+      aggregate.option({ maxTimeMS: 1000 });
+      assert.equal(aggregate.options.allowDiskUse, true);
+      assert.equal(aggregate.options.maxTimeMS, 1000);
 
-        if (mongo32_or_greater) {
-          aggregate.readConcern('m');
-          assert.deepEqual(aggregate.options.readConcern, { level: 'majority' });
-        }
+      if (mongo32_or_greater) {
+        aggregate.readConcern('m');
+        assert.deepEqual(aggregate.options.readConcern, { level: 'majority' });
+      }
 
-        aggregate.
-          exec(function(err, docs) {
-            assert.ifError(err);
-            assert.equal(1, docs.length);
-            assert.equal(docs[0].sal, 18000);
-            done();
-          });
-      });
+      const docs = await aggregate.exec();
+
+      assert.equal(1, docs.length);
+      assert.equal(docs[0].sal, 18000);
     });
 
     describe('middleware (gh-5251)', function() {
-      it('pre', function(done) {
+      it('pre', async function() {
         const s = new Schema({ name: String });
 
         let called = 0;
-        s.pre('aggregate', function(next) {
+        s.pre('aggregate', function() {
           ++called;
-          next();
+          return Promise.resolve();
         });
 
         const M = db.model('Test', s);
 
-        M.aggregate([{ $match: { name: 'test' } }], function(error, res) {
-          assert.ifError(error);
-          assert.deepEqual(res, []);
-          assert.equal(called, 1);
-          done();
-        });
+        const res = await M.aggregate([{ $match: { name: 'test' } }]);
+
+        assert.deepEqual(res, []);
+        assert.equal(called, 1);
       });
 
-      it('setting option in pre (gh-7606)', function() {
+      it('setting option in pre (gh-7606)', async function() {
         const s = new Schema({ name: String });
 
-        s.pre('aggregate', function(next) {
+        s.pre('aggregate', function() {
           this.options.collation = { locale: 'en_US', strength: 1 };
-          next();
+          return Promise.resolve();
         });
 
         const M = db.model('Test', s);
 
-        return co(function*() {
-          yield M.create([{ name: 'alpha' }, { name: 'Zeta' }]);
+        await M.create([{ name: 'alpha' }, { name: 'Zeta' }]);
 
-          const docs = yield M.aggregate([{ $sort: { name: 1 } }]);
+        const docs = await M.aggregate([{ $sort: { name: 1 } }]);
 
-          assert.equal(docs[0].name, 'alpha');
-          assert.equal(docs[1].name, 'Zeta');
-        });
+        assert.equal(docs[0].name, 'alpha');
+        assert.equal(docs[1].name, 'Zeta');
       });
 
-      it('adding to pipeline in pre (gh-8017)', function() {
+      it('adding to pipeline in pre (gh-8017)', async function() {
         const s = new Schema({ name: String });
 
-        s.pre('aggregate', function(next) {
+        s.pre('aggregate', function() {
           this.append({ $limit: 1 });
-          next();
+          return Promise.resolve();
         });
 
         const M = db.model('Test', s);
 
-        return co(function*() {
-          yield M.create([{ name: 'alpha' }, { name: 'Zeta' }]);
+        await M.create([{ name: 'alpha' }, { name: 'Zeta' }]);
 
-          const docs = yield M.aggregate([{ $sort: { name: 1 } }]);
+        const docs = await M.aggregate([{ $sort: { name: 1 } }]);
 
-          assert.equal(docs.length, 1);
-          assert.equal(docs[0].name, 'Zeta');
-        });
+        assert.equal(docs.length, 1);
+        assert.equal(docs[0].name, 'Zeta');
       });
 
-      it('post', function(done) {
+      it('post', async function() {
         const s = new Schema({ name: String });
 
         const calledWith = [];
@@ -995,16 +965,14 @@ describe('aggregate: ', function() {
 
         const M = db.model('Test', s);
 
-        M.aggregate([{ $match: { name: 'test' } }], function(error, res) {
-          assert.ifError(error);
-          assert.deepEqual(res, []);
-          assert.equal(calledWith.length, 1);
-          assert.deepEqual(calledWith[0], []);
-          done();
-        });
+        const res = await M.aggregate([{ $match: { name: 'test' } }]);
+
+        assert.deepEqual(res, []);
+        assert.equal(calledWith.length, 1);
+        assert.deepEqual(calledWith[0], []);
       });
 
-      it('error handler with agg error', function(done) {
+      it('error handler with agg error', async function() {
         const s = new Schema({ name: String });
 
         const calledWith = [];
@@ -1015,23 +983,24 @@ describe('aggregate: ', function() {
 
         const M = db.model('Test', s);
 
-        M.aggregate([{ $fakeStage: { name: 'test' } }], function(error, res) {
-          assert.ok(error);
-          assert.ok(error.message.indexOf('Unrecognized pipeline stage') !== -1,
-            error.message);
-          assert.equal(res, null);
-          assert.equal(calledWith.length, 1);
-          assert.equal(calledWith[0], error);
-          done();
-        });
+        const error = await M.aggregate([{ $fakeStage: { name: 'test' } }]).then(() => null, err => err);
+
+        assert.ok(error);
+        assert.ok(
+          error.message.indexOf('Unrecognized pipeline stage') !== -1,
+          error.message
+        );
+
+        assert.equal(calledWith.length, 1);
+        assert.equal(calledWith[0], error);
       });
 
-      it('error handler with pre error', function(done) {
+      it('error handler with pre error', async function() {
         const s = new Schema({ name: String });
 
         const calledWith = [];
-        s.pre('aggregate', function(next) {
-          next(new Error('woops'));
+        s.pre('aggregate', function() {
+          throw new Error('woops');
         });
         s.post('aggregate', function(error, res, next) {
           calledWith.push(error);
@@ -1040,24 +1009,22 @@ describe('aggregate: ', function() {
 
         const M = db.model('Test', s);
 
-        M.aggregate([{ $match: { name: 'test' } }], function(error, res) {
-          assert.ok(error);
-          assert.equal(error.message, 'woops');
-          assert.equal(res, null);
-          assert.equal(calledWith.length, 1);
-          assert.equal(calledWith[0], error);
-          done();
-        });
+        const error = await M.aggregate([{ $match: { name: 'test' } }]).then(() => null, err => err);
+
+        assert.ok(error);
+        assert.equal(error.message, 'woops');
+        assert.equal(calledWith.length, 1);
+        assert.equal(calledWith[0], error);
       });
 
-      it('with agg cursor', function(done) {
+      it('with agg cursor', async function() {
         const s = new Schema({ name: String });
 
         let calledPre = 0;
         let calledPost = 0;
-        s.pre('aggregate', function(next) {
+        s.pre('aggregate', function() {
           ++calledPre;
-          next();
+          return Promise.resolve();
         });
         s.post('aggregate', function(res, next) {
           ++calledPost;
@@ -1067,19 +1034,14 @@ describe('aggregate: ', function() {
         const M = db.model('Test', s);
 
         let numDocs = 0;
-        M.
+        await M.
           aggregate([{ $match: { name: 'test' } }]).
           cursor({ useMongooseAggCursor: true }).
-          exec().
-          eachAsync(function() {
-            ++numDocs;
-          }).
-          then(function() {
-            assert.equal(numDocs, 0);
-            assert.equal(calledPre, 1);
-            assert.equal(calledPost, 0);
-            done();
-          });
+          eachAsync(function() { ++numDocs; });
+
+        assert.equal(numDocs, 0);
+        assert.equal(calledPre, 1);
+        assert.equal(calledPost, 0);
       });
 
       it('with explain() (gh-5887)', function() {
@@ -1087,9 +1049,9 @@ describe('aggregate: ', function() {
 
         let calledPre = 0;
         const calledPost = [];
-        s.pre('aggregate', function(next) {
+        s.pre('aggregate', function() {
           ++calledPre;
-          next();
+          return Promise.resolve();
         });
         s.post('aggregate', function(res, next) {
           calledPost.push(res);
@@ -1111,7 +1073,7 @@ describe('aggregate: ', function() {
       const schema = new Schema({ name: String }, { read: 'secondary' });
       const M = db.model('Test', schema);
       const a = M.aggregate();
-      assert.equal(a.options.readPreference.mode, 'secondary');
+      assert.equal(a.options.readPreference, 'secondary');
 
       a.read('secondaryPreferred');
 
@@ -1119,46 +1081,59 @@ describe('aggregate: ', function() {
     });
   });
 
-  it('cursor (gh-3160)', function() {
+  it('cursor (gh-3160)', async function() {
     const MyModel = db.model('Test', { name: String });
 
-    return co(function * () {
-      yield MyModel.create({ name: 'test' });
+    await MyModel.create({ name: 'test' });
 
-      const cursor = MyModel.
-        aggregate([{ $match: { name: 'test' } }, { $project: { name: '$name' } }]).
-        allowDiskUse(true).
-        cursor({ batchSize: 2500 }).
-        exec();
+    const cursor = MyModel.
+      aggregate([{ $match: { name: 'test' } }, { $project: { name: '$name' } }]).
+      allowDiskUse(true).
+      cursor({ batchSize: 2500 });
 
-      assert.ok(cursor.eachAsync);
-    });
+    assert.ok(cursor.eachAsync);
   });
 
-  it('catch() (gh-7267)', function() {
+  it('catch() (gh-7267)', async function() {
     const MyModel = db.model('Test', {});
 
-    return co(function * () {
-      const err = yield MyModel.aggregate([{ $group: { foo: 'bar' } }]).
-        catch(err => err);
-      assert.ok(err instanceof Error);
-      assert.equal(err.name, 'MongoError');
-    });
+    const err = await MyModel.aggregate([{ $group: { foo: 'bar' } }])
+      .then(() => null, err => err);
+    assert.ok(err instanceof Error);
+    assert.equal(err.name, 'MongoServerError');
   });
 
-  it('cursor() without options (gh-3855)', function(done) {
-    const db = start();
-
+  it('cursor() without options (gh-3855)', function() {
     const MyModel = db.model('Test', { name: String });
 
-    db.on('open', function() {
-      const cursor = MyModel.
-        aggregate([{ $match: { name: 'test' } }]).
-        cursor().
-        exec();
-      assert.ok(cursor instanceof require('stream').Readable);
-      done();
-    });
+    const cursor = MyModel.
+      aggregate([{ $match: { name: 'test' } }]).
+      cursor();
+    assert.ok(cursor instanceof require('stream').Readable);
+  });
+
+  it('cursor() buffers aggregate cursor creation until connection opens', async function() {
+    const collectionName = 'aggregate_cursor_buffering';
+    const schema = new Schema({ name: String });
+    const Seed = db.model('Seed', schema, collectionName);
+
+    await Seed.deleteMany({});
+    await Seed.create([{ name: 'Axl' }, { name: 'Slash' }]);
+
+    const conn = mongoose.createConnection();
+    try {
+      const Test = conn.model('Test', schema, collectionName);
+      const cursor = Test.aggregate([{ $sort: { name: 1 } }]).cursor();
+      const docPromise = cursor.next();
+
+      await conn.openUri(start.uri);
+      const doc = await docPromise;
+
+      assert.equal(doc.name, 'Axl');
+      assert.equal(typeof cursor.cursor.next, 'function');
+    } finally {
+      await conn.close();
+    }
   });
 
   it('cursor() with useMongooseAggCursor (gh-5145)', function() {
@@ -1166,63 +1141,52 @@ describe('aggregate: ', function() {
 
     const cursor = MyModel.
       aggregate([{ $match: { name: 'test' } }]).
-      cursor({ useMongooseAggCursor: true }).
-      exec();
+      cursor({ useMongooseAggCursor: true });
     assert.ok(cursor instanceof require('stream').Readable);
   });
 
-  it('cursor() with useMongooseAggCursor works (gh-5145) (gh-5394)', function(done) {
+  it('cursor() with useMongooseAggCursor works (gh-5145) (gh-5394)', async function() {
     const MyModel = db.model('Test', { name: String });
 
-    MyModel.create({ name: 'test' }, function(error) {
-      assert.ifError(error);
+    await MyModel.create({ name: 'test' });
 
-      const docs = [];
-      MyModel.
-        aggregate([{ $match: { name: 'test' } }]).
-        cursor({ useMongooseAggCursor: true }).
-        exec().
-        eachAsync(function(doc) {
-          docs.push(doc);
-        }).
-        then(function() {
-          assert.equal(docs.length, 1);
-          assert.equal(docs[0].name, 'test');
-          done();
-        });
-    });
+    const docs = [];
+    await MyModel.
+      aggregate([{ $match: { name: 'test' } }]).
+      cursor({ useMongooseAggCursor: true }).
+      eachAsync(function(doc) {
+        docs.push(doc);
+      });
+
+    assert.equal(docs.length, 1);
+    assert.equal(docs[0].name, 'test');
   });
 
-  it('cursor() eachAsync (gh-4300)', function(done) {
+  it('cursor() eachAsync (gh-4300)', async function() {
     const MyModel = db.model('Test', { name: String });
 
     let cur = 0;
     const expectedNames = ['Axl', 'Slash'];
-    MyModel.create([{ name: 'Axl' }, { name: 'Slash' }]).
-      then(function() {
-        return MyModel.aggregate([{ $sort: { name: 1 } }]).
-          cursor().
-          exec().
-          eachAsync(function(doc) {
-            const _cur = cur;
-            assert.equal(doc.name, expectedNames[cur]);
-            return {
-              then: function(resolve) {
-                setTimeout(function() {
-                  assert.equal(_cur, cur++);
-                  resolve();
-                }, 50);
-              }
-            };
-          }).
-          then(function() {
-            done();
-          });
-      }).
-      catch(done);
+
+    await MyModel.create([{ name: 'Axl' }, { name: 'Slash' }]);
+
+    await MyModel.aggregate([{ $sort: { name: 1 } }]).
+      cursor().
+      eachAsync(function(doc) {
+        const _cur = cur;
+        assert.equal(doc.name, expectedNames[cur]);
+        return {
+          then: function(resolve) {
+            setTimeout(function() {
+              assert.equal(_cur, cur++);
+              resolve();
+            }, 50);
+          }
+        };
+      });
   });
 
-  it('cursor() eachAsync with options (parallel)', function(done) {
+  it('cursor() eachAsync with options (parallel)', async function() {
     const MyModel = db.model('Test', { name: String });
 
     const names = [];
@@ -1239,107 +1203,178 @@ describe('aggregate: ', function() {
         }
       };
     };
-    MyModel.create([{ name: 'Axl' }, { name: 'Slash' }]).
-      then(function() {
-        return MyModel.aggregate([{ $sort: { name: 1 } }]).
-          cursor().
-          exec().
-          eachAsync(checkDoc, { parallel: 2 }).then(function() {
-            assert.ok(Date.now() - startedAt[1] >= 100);
-            assert.equal(startedAt.length, 2);
-            assert.ok(startedAt[1] - startedAt[0] < 50, `${startedAt[1] - startedAt[0]}`);
-            assert.deepEqual(names.sort(), expectedNames);
-            done();
-          });
-      }).
-      catch(done);
-  });
 
-  it('ability to add noCursorTimeout option (gh-4241)', function(done) {
-    const MyModel = db.model('Test', {
-      name: String
-    });
+    await MyModel.create([{ name: 'Axl' }, { name: 'Slash' }]);
 
-    const cursor = MyModel.
-      aggregate([{ $match: { name: 'test' } }]).
-      addCursorFlag('noCursorTimeout', true).
+    await MyModel.aggregate([{ $sort: { name: 1 } }]).
       cursor().
-      exec();
+      eachAsync(checkDoc, { parallel: 2 }).then(function() {
+        assert.ok(Date.now() - startedAt[1] >= 75, Date.now() - startedAt[1]);
+        assert.equal(startedAt.length, 2);
+        assert.ok(startedAt[1] - startedAt[0] < 50, `${startedAt[1] - startedAt[0]}`);
+        assert.deepEqual(names.sort(), expectedNames);
+      });
+  });
 
-    cursor.once('cursor', cursor => {
-      assert.ok(cursor.cursorState.cmd.noCursorTimeout);
-      done();
+  it('is now a proper aggregate cursor vs what it was before gh-10410', function() {
+    const MyModel = db.model('Test', { name: String });
+    assert.throws(() => {
+      MyModel.aggregate([]).cursor({ batchSize: 1000 }).exec();
     });
   });
 
-  it('query by document (gh-4866)', function(done) {
+  it('query by document (gh-4866)', async function() {
     const MyModel = db.model('Test', {
       name: String
     });
 
-    MyModel.create({ name: 'test' }).
-      then(function(doc) { return MyModel.aggregate([{ $match: doc }]); }).
-      then(function() {
-        done();
-      }).
-      catch(done);
+    const doc = await MyModel.create({ name: 'test' });
+    const res = await MyModel.aggregate([{ $match: doc }]);
+    assert.equal(res.length, 1);
   });
 
-  it('sort by text score (gh-5258)', function(done) {
+  it('sort by text score (gh-5258)', async function() {
     const mySchema = new Schema({ test: String });
     mySchema.index({ test: 'text' });
     const M = db.model('Test', mySchema);
 
-    M.on('index', function(error) {
-      assert.ifError(error);
-      M.create([{ test: 'test test' }, { test: 'a test' }], function(error) {
-        assert.ifError(error);
-        const aggregate = M.aggregate();
-        aggregate.match({ $text: { $search: 'test' } });
-        aggregate.sort({ score: { $meta: 'textScore' } });
+    await M.init();
 
-        aggregate.exec(function(error, res) {
-          assert.ifError(error);
-          assert.equal(res.length, 2);
-          assert.equal(res[0].test, 'test test');
-          assert.equal(res[1].test, 'a test');
-          done();
-        });
-      });
+    await M.create([{ test: 'test test' }, { test: 'a test' }]);
+
+    const aggregate = M.aggregate();
+    aggregate.match({ $text: { $search: 'test' } });
+    aggregate.sort({ score: { $meta: 'textScore' } });
+
+    const res = await aggregate.exec();
+
+    assert.equal(res.length, 2);
+    assert.equal(res[0].test, 'test test');
+    assert.equal(res[1].test, 'a test');
+  });
+
+  it('cursor supports transform option (gh-14331)', async function() {
+    const mySchema = new Schema({ name: String });
+    const Test = db.model('Test', mySchema);
+
+    await Test.deleteMany({});
+    await Test.create([{ name: 'Apple' }, { name: 'Apple' }]);
+
+    let resolve;
+    const waitForStream = new Promise(innerResolve => {
+      resolve = innerResolve;
     });
+    const otherStream = new stream.Writable({
+      write(chunk, encoding, callback) {
+        resolve(chunk.toString());
+        callback();
+      }
+    });
+
+    await Test.
+      aggregate([{ $match: { name: 'Apple' } }]).
+      cursor({ transform: JSON.stringify }).
+      pipe(otherStream);
+    const streamValue = await waitForStream;
+    assert.ok(streamValue.includes('"name":"Apple"'), streamValue);
+  });
+
+  it('cursor() emits the error passed to destroy() (gh-16609)', async function() {
+    const Test = db.model('Test', new Schema({ name: String }));
+    await Test.create({ name: 'test1' });
+    const cursor = Test.aggregate([{ $match: {} }]).cursor();
+    const [driverCursor] = await once(cursor, 'cursor');
+    const destroyError = new Error('consumer stopped reading');
+
+    cursor.destroy(destroyError);
+
+    const [error] = await once(cursor, 'error');
+    assert.strictEqual(error, destroyError);
+    assert.ok(driverCursor.closed);
   });
 
   describe('Mongo 3.6 options', function() {
-    before(function(done) {
-      onlyTestAtOrAbove('3.6', this, done);
+    before(async function() {
+      await onlyTestAtOrAbove('3.6', this);
     });
 
-    it('adds hint option', function(done) {
+    it('adds hint option', async function() {
       const mySchema = new Schema({ name: String, qty: Number });
       mySchema.index({ qty: -1, name: -1 });
       const M = db.model('Test', mySchema);
-      M.on('index', function(error) {
-        assert.ifError(error);
-        const docs = [
-          { name: 'Andrew', qty: 4 },
-          { name: 'Betty', qty: 5 },
-          { name: 'Charlie', qty: 4 }
-        ];
-        M.create(docs, function(error) {
-          assert.ifError(error);
-          const aggregate = M.aggregate();
-          aggregate.match({})
-            .hint({ qty: -1, name: -1 }).exec(function(error, docs) {
-              assert.ifError(error);
-              assert.equal(docs[0].name, 'Betty');
-              assert.equal(docs[1].name, 'Charlie');
-              assert.equal(docs[2].name, 'Andrew');
-              done();
-            });
-        });
+      await M.init();
+
+      const docs = [
+        { name: 'Andrew', qty: 4 },
+        { name: 'Betty', qty: 5 },
+        { name: 'Charlie', qty: 4 }
+      ];
+      await M.create(docs);
+
+      const foundDocs = await M.aggregate().match({})
+        .hint({ qty: -1, name: -1 }).exec();
+
+      assert.equal(foundDocs[0].name, 'Betty');
+      assert.equal(foundDocs[1].name, 'Charlie');
+      assert.equal(foundDocs[2].name, 'Andrew');
+    });
+  });
+
+  it('should not throw error if database connection has not been established (gh-13125)', async function() {
+    const m = new mongoose.Mongoose();
+    const mySchema = new Schema({ test: String });
+    const M = m.model('Test', mySchema);
+
+    const aggregate = M.aggregate();
+    aggregate.match({ foo: 'bar' });
+
+    const p = aggregate.exec();
+
+    await m.connect(start.uri);
+
+    await p;
+    await m.disconnect();
+  });
+
+  it('throws error if calling near() with empty coordinates (gh-15188)', async function() {
+    const M = db.model('Test', new Schema({ loc: { type: [Number], index: '2d' } }));
+    assert.throws(() => {
+      const aggregate = new Aggregate([], M);
+      aggregate.near({
+        near: {
+          type: 'Point',
+          coordinates: []
+        }
       });
+    }, /Aggregate `near\(\)` argument has invalid coordinates, got ""/);
+  });
+
+  it('cursor() errors out if schema pre aggregate hook throws an error (gh-15279)', async function() {
+    const schema = new Schema({ name: String });
+
+    schema.pre('aggregate', function() {
+      if (!this.options.allowed) {
+        throw new Error('Unauthorized aggregate operation: only allowed operations are permitted');
+      }
     });
 
+    const Test = db.model('Test', schema);
 
+    await Test.create({ name: 'test1' });
+
+    await assert.rejects(
+      async() => {
+        await Test.aggregate([{ $limit: 1 }], { allowed: false }).exec();
+      },
+      err => err.message === 'Unauthorized aggregate operation: only allowed operations are permitted'
+    );
+
+    const cursor = Test.aggregate([{ $limit: 1 }], { allowed: false }).cursor();
+    await assert.rejects(
+      async() => {
+        await cursor.next();
+      },
+      err => err.message === 'Unauthorized aggregate operation: only allowed operations are permitted'
+    );
   });
 });

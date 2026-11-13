@@ -1,17 +1,18 @@
 'use strict';
 const assert = require('assert');
 const mongoose = require('../../');
+const start = require('../common');
 
 describe('schemaTypes', function() {
   let db;
   const Schema = mongoose.Schema;
 
   before(function() {
-    db = mongoose.createConnection('mongodb://localhost:27017/mongoose_test');
+    db = mongoose.createConnection(start.uri);
   });
 
-  after(function(done) {
-    db.close(done);
+  after(async function() {
+    await db.close();
   });
 
   /**
@@ -61,7 +62,7 @@ describe('schemaTypes', function() {
     assert.ok(t.validateSync());
     assert.equal(t.validateSync().errors['test'].name, 'CastError');
     assert.equal(t.validateSync().errors['test'].message,
-      'Cast to Int8 failed for value "abc" at path "test"');
+      'Cast to Int8 failed for value "abc" (type string) at path "test" for model "CustomTypeExample"');
     assert.equal(t.validateSync().errors['test'].reason.message,
       'Int8: abc is not a number');
   });

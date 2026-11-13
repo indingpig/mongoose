@@ -6,11 +6,10 @@
 
 const start = require('./common');
 
-const DocumentArray = require('../lib/types/documentarray');
-const EmbeddedDocument = require('../lib/types/embedded');
+const DocumentArray = require('../lib/types/documentArray');
+const ArraySubdocument = require('../lib/types/arraySubdocument');
 const assert = require('assert');
-const co = require('co');
-const random = require('../lib/utils').random;
+const idGetter = require('../lib/helpers/schema/idGetter');
 const setValue = require('../lib/utils').setValue;
 
 const mongoose = require('./common').mongoose;
@@ -23,14 +22,14 @@ const MongooseDocumentArray = mongoose.Types.DocumentArray;
 
 function TestDoc(schema) {
   const Subdocument = function() {
-    EmbeddedDocument.call(this, {}, new DocumentArray);
+    ArraySubdocument.call(this, {}, new DocumentArray());
   };
 
   /**
-   * Inherits from EmbeddedDocument.
+   * Inherits from ArraySubdocument.
    */
 
-  Subdocument.prototype.__proto__ = EmbeddedDocument.prototype;
+  Object.setPrototypeOf(Subdocument.prototype, ArraySubdocument.prototype);
 
   /**
    * Set schema.
@@ -40,7 +39,7 @@ function TestDoc(schema) {
     title: { type: String }
   });
 
-  Subdocument.prototype.$__setSchema(schema || SubSchema);
+  Subdocument.prototype.$__setSchema(idGetter(schema || SubSchema));
 
   return Subdocument;
 }
@@ -56,15 +55,15 @@ describe('types.documentarray', function() {
     db = start();
   });
 
-  after(function(done) {
-    db.close(done);
+  after(async function() {
+    await db.close();
   });
 
   beforeEach(() => db.deleteModel(/.*/));
   afterEach(() => require('./util').clearTestData(db));
   afterEach(() => require('./util').stopRemainingOps(db));
 
-  it('behaves and quacks like an array', function(done) {
+  it('behaves and quacks like an array', function() {
     const a = new MongooseDocumentArray();
 
     assert.ok(a instanceof Array);
@@ -74,17 +73,17 @@ describe('types.documentarray', function() {
 
     assert.deepEqual(a.$atomics().constructor, Object);
 
-    done();
+
   });
 
-  it('#id', function(done) {
+  it('#id', function() {
     let Subdocument = TestDoc();
 
     let sub1 = new Subdocument();
     sub1.title = 'Hello again to all my friends';
     let id = sub1.id;
 
-    let a = new MongooseDocumentArray([sub1]);
+    let a = new MongooseDocumentArray([sub1], 'test', null);
     assert.equal(a.id(id).title, 'Hello again to all my friends');
     assert.equal(a.id(sub1._id).title, 'Hello again to all my friends');
 
@@ -142,13 +141,6 @@ describe('types.documentarray', function() {
     assert.notEqual(a.id({ one: 'rolling', two: 'rock' }).title, 'rock-n-roll');
     assert.equal(a.id({ one: 'rock', two: 'roll' }).title, 'rock-n-roll');
 
-    // test with no _id
-    let NoId = new Schema({
-      title: { type: String }
-    }, { noId: true });
-
-    Subdocument = TestDoc(NoId);
-
     let sub4 = new Subdocument();
     sub4.title = 'rock-n-roll';
 
@@ -160,13 +152,6 @@ describe('types.documentarray', function() {
       threw = err;
     }
     assert.equal(threw, false);
-
-    // test the _id option, noId is deprecated
-    NoId = new Schema({
-      title: { type: String }
-    }, { _id: false });
-
-    Subdocument = TestDoc(NoId);
 
     sub4 = new Subdocument();
     sub4.title = 'rock-n-roll';
@@ -201,12 +186,27 @@ describe('types.documentarray', function() {
 
     a = new MongooseDocumentArray([sub]);
     assert.equal(a.id(id).title, 'Hello again to all my friends');
+  });
 
-    done();
+  it('#id with custom schematype (gh-15725)', function() {
+    const schema = new Schema({ _id: Number, name: String });
+    const Subdocument = TestDoc(schema);
+
+    const sub1 = new Subdocument();
+    sub1._id = 42;
+    sub1.title = 'Hello again to all my friends';
+
+    const parentDoc = { $__: true, $__schema: new Schema({ subdocs: [schema] }) };
+
+    const a = new MongooseDocumentArray([sub1], 'subdocs', parentDoc);
+    assert.equal(a.id('42').title, 'Hello again to all my friends');
+    assert.equal(a.id(sub1.id).title, 'Hello again to all my friends');
+    assert.ok(!a.id('43'));
+    assert.ok(!a.id('not a number'));
   });
 
   describe('inspect', function() {
-    it('works with bad data', function(done) {
+    it('works with bad data', function() {
       let threw = false;
       const a = new MongooseDocumentArray([null]);
       try {
@@ -216,12 +216,12 @@ describe('types.documentarray', function() {
         console.error(err.stack);
       }
       assert.ok(!threw);
-      done();
+
     });
   });
 
   describe('toObject', function() {
-    it('works with bad data', function(done) {
+    it('works with bad data', function() {
       let threw = false;
       const a = new MongooseDocumentArray([null]);
       try {
@@ -231,9 +231,9 @@ describe('types.documentarray', function() {
         console.error(err.stack);
       }
       assert.ok(!threw);
-      done();
+
     });
-    it('passes options to its documents (gh-1415) (gh-4455)', function(done) {
+    it('passes options to its documents (gh-1415) (gh-4455)', function() {
       const subSchema = new Schema({
         title: { type: String }
       });
@@ -249,14 +249,14 @@ describe('types.documentarray', function() {
 
       const db = mongoose.createConnection();
       const M = db.model('Test', { docs: [subSchema] });
-      const m = new M;
+      const m = new M();
       m.docs.push({ docs: [{ title: 'hello' }] });
       const delta = m.$__delta()[1];
       assert.equal(delta.$push.docs.$each[0].changed, undefined);
 
-      done();
+
     });
-    it('uses the correct transform (gh-1412)', function(done) {
+    it('uses the correct transform (gh-1412)', function() {
       const SecondSchema = new Schema({});
 
       SecondSchema.set('toObject', {
@@ -291,12 +291,12 @@ describe('types.documentarray', function() {
       assert.ok(obj.second[1].secondToObject);
       assert.ok(!obj.second[0].firstToObject);
       assert.ok(!obj.second[1].firstToObject);
-      done();
+
     });
   });
 
   describe('create()', function() {
-    it('works', function(done) {
+    it('works', function() {
       const a = new MongooseDocumentArray([]);
       assert.equal(typeof a.create, 'function');
 
@@ -308,66 +308,54 @@ describe('types.documentarray', function() {
       const subdoc = t.docs.create({ name: 100 });
       assert.ok(subdoc._id);
       assert.equal(subdoc.name, '100');
-      assert.ok(subdoc instanceof EmbeddedDocument);
-      done();
+      assert.ok(subdoc instanceof ArraySubdocument);
+
     });
   });
 
   describe('push()', function() {
-    it('does not re-cast instances of its embedded doc', function(done) {
+    it('does not re-cast instances of its embedded doc', async function() {
       const child = new Schema({ name: String, date: Date });
-      child.pre('save', function(next) {
-        this.date = new Date;
-        next();
+      child.pre('save', function() {
+        this.date = new Date();
       });
       const schema = new Schema({ children: [child] });
-      const M = db.model('Test', schema, 'edarecast-' + random());
-      const m = new M;
-      m.save(function(err) {
-        assert.ifError(err);
-        M.findById(m._id, function(err, doc) {
-          assert.ifError(err);
-          const c = doc.children.create({ name: 'first' });
-          assert.equal(c.date, undefined);
-          doc.children.push(c);
-          assert.equal(c.date, undefined);
-          doc.save(function(err) {
-            assert.ifError(err);
-            assert.ok(doc.children[doc.children.length - 1].date);
-            assert.equal(c.date, doc.children[doc.children.length - 1].date);
+      const M = db.model('Test', schema);
+      const m = new M();
+      await m.save();
+      let doc = await M.findById(m._id);
+      const c = doc.children.create({ name: 'first' });
+      assert.equal(c.date, undefined);
+      doc.children.push(c);
+      assert.equal(c.date, undefined);
+      await doc.save();
+      assert.ok(doc.children[doc.children.length - 1].date);
+      assert.equal(c.date, doc.children[doc.children.length - 1].date);
 
-            doc.children.push(c);
-            doc.children.push(c);
+      doc.children.push(c);
+      doc.children.push(c);
 
-            doc.save(function(err) {
-              assert.ifError(err);
-              M.findById(m._id, function(err, doc) {
-                assert.ifError(err);
-                assert.equal(doc.children.length, 3);
-                doc.children.forEach(function(child) {
-                  assert.equal(doc.children[0].id, child.id);
-                });
-                done();
-              });
-            });
-          });
-        });
+      await doc.save();
+      doc = await M.findById(m._id);
+      assert.equal(doc.children.length, 3);
+      doc.children.forEach(function(child) {
+        assert.equal(doc.children[0].id, child.id);
       });
     });
 
-    it('corrects #ownerDocument() and index if value was created with array.create() (gh-1385)', function(done) {
-      const mg = new mongoose.Mongoose;
+    it('corrects #ownerDocument() and index if value was created with array.create() (gh-1385)', function() {
+      const mg = new mongoose.Mongoose();
       const M = mg.model('Test', { docs: [{ name: String }] });
-      const m = new M;
+      const m = new M();
       const doc = m.docs.create({ name: 'test 1385' });
       assert.equal(String(doc.ownerDocument()._id), String(m._id));
       m.docs.push(doc);
       assert.equal(doc.ownerDocument()._id, String(m._id));
       assert.strictEqual(doc.__index, 0);
-      done();
+
     });
 
-    it('corrects #ownerDocument() if value was created with array.create() and set() (gh-7504)', function(done) {
+    it('corrects #ownerDocument() if value was created with array.create() and set() (gh-7504)', function() {
       const M = db.model('Test', {
         docs: [{ name: { type: String, validate: () => false } }]
       });
@@ -378,7 +366,7 @@ describe('types.documentarray', function() {
       assert.strictEqual(doc.__index, 0);
 
       assert.ok(m.validateSync().errors['docs.0.name']);
-      done();
+
     });
 
     it('reports validation errors with correct index path (gh-7724)', function() {
@@ -411,8 +399,8 @@ describe('types.documentarray', function() {
     });
   });
 
-  it('#push should work on EmbeddedDocuments more than 2 levels deep', function(done) {
-    const Comments = new Schema;
+  it('#push should work on ArraySubdocument more than 2 levels deep', async function() {
+    const Comments = new Schema();
     Comments.add({
       title: String,
       comments: [Comments]
@@ -424,7 +412,7 @@ describe('types.documentarray', function() {
 
     const Post = db.model('BlogPost', BlogPost);
 
-    const p = new Post({ title: 'comment nesting' });
+    let p = new Post({ title: 'comment nesting' });
     const c1 = p.comments.create({ title: 'c1' });
     const c2 = c1.comments.create({ title: 'c2' });
     const c3 = c2.comments.create({ title: 'c3' });
@@ -433,28 +421,17 @@ describe('types.documentarray', function() {
     c1.comments.push(c2);
     c2.comments.push(c3);
 
-    p.save(function(err) {
-      assert.ifError(err);
+    await p.save();
+    p = await Post.findById(p._id);
 
-      Post.findById(p._id, function(err, p) {
-        assert.ifError(err);
-
-        p.comments[0].comments[0].comments[0].comments.push({ title: 'c4' });
-        p.save(function(err) {
-          assert.ifError(err);
-
-          Post.findById(p._id, function(err, p) {
-            assert.ifError(err);
-            assert.equal(p.comments[0].comments[0].comments[0].comments[0].title, 'c4');
-            done();
-          });
-        });
-      });
-    });
+    p.comments[0].comments[0].comments[0].comments.push({ title: 'c4' });
+    await p.save();
+    p = await Post.findById(p._id);
+    assert.equal(p.comments[0].comments[0].comments[0].comments[0].title, 'c4');
   });
 
   describe('required (gh-6364)', function() {
-    it('on top level', function(done) {
+    it('on top level', function() {
       const calls = [];
       const schema = new Schema({
         docs: {
@@ -474,10 +451,10 @@ describe('types.documentarray', function() {
 
       t.validateSync();
       assert.equal(calls.length, 1);
-      done();
+
     });
 
-    it('in arr', function(done) {
+    it('in arr', async function() {
       const calls = [];
       const schema = new Schema({
         docs: [{
@@ -491,7 +468,7 @@ describe('types.documentarray', function() {
 
       mongoose.deleteModel(/Test/);
       const T = mongoose.model('Test', schema);
-      const t = new T({});
+      let t = new T({});
       t.docs.push(null);
       t.docs.push({ name: 'test2' });
 
@@ -499,21 +476,75 @@ describe('types.documentarray', function() {
       assert.equal(calls.length, 2);
       assert.ok(err);
       assert.ok(err.errors['docs.0']);
-      done();
+
+      t = new T({});
+      t.docs.push(null);
+      t.docs.push({ name: 'test2' });
+      const asyncErr = await t.validate().then(() => null, err => err);
+      assert.equal(calls.length, 4);
+      assert.ok(asyncErr);
+      assert.ok(asyncErr.errors['docs.0']);
+    });
+  });
+
+  describe('avoids double validating document array elements', function() {
+    it('when an element is modified before the array itself (gh-16522)', async function() {
+      const calls = [];
+      const schema = new Schema({
+        arr: [new Schema({ n: { type: String, validate(v) { calls.push(v); return true; } } })]
+      });
+      mongoose.deleteModel(/Test/);
+      const T = mongoose.model('Test', schema);
+
+      const raw = new T({ arr: [{ n: 'a' }, { n: 'b' }] }).toObject();
+      raw._id = raw._id || new mongoose.Types.ObjectId();
+      const doc = T.hydrate(raw);
+
+      // `arr.0` lands in `activePaths` before `arr` does, so the element path
+      // and the array path both end up describing the same work.
+      doc.arr[0] = { n: 'z' };
+      doc.arr.push({ n: 'c' });
+
+      calls.length = 0;
+      await doc.validate();
+      assert.deepStrictEqual(calls, ['z', 'b', 'c']);
+
+      calls.length = 0;
+      doc.validateSync();
+      assert.deepStrictEqual(calls, ['z', 'b', 'c']);
+    });
+
+    it('validates each element once with validateAllPaths (gh-16522)', async function() {
+      const calls = [];
+      const schema = new Schema({
+        arr: [new Schema({ n: { type: String, validate(v) { calls.push(v); return true; } } })]
+      });
+      mongoose.deleteModel(/Test/);
+      const T = mongoose.model('Test', schema);
+
+      // `validateAllPaths` lists the array and every element, but validating a
+      // document array already validates each element, so listing both would
+      // run every subdocument's validators twice.
+      calls.length = 0;
+      new T({ arr: [{ n: 'p' }, { n: 'q' }] }).validateSync(undefined, { validateAllPaths: true });
+      assert.deepStrictEqual(calls, ['p', 'q']);
+
+      calls.length = 0;
+      await new T({ arr: [{ n: 'p' }, { n: 'q' }] }).validate({ validateAllPaths: true });
+      assert.deepStrictEqual(calls, ['p', 'q']);
     });
   });
 
   describe('invalidate()', function() {
-    it('works', function(done) {
+    it('works', async function() {
       const schema = new Schema({ docs: [{ name: 'string' }] });
-      schema.pre('validate', function(next) {
+      schema.pre('validate', function() {
         const subdoc = this.docs[this.docs.length - 1];
         subdoc.invalidate('name', 'boo boo', '%');
-        next();
       });
       mongoose.deleteModel(/Test/);
       const T = mongoose.model('Test', schema);
-      const t = new T;
+      const t = new T();
       t.docs.push({ name: 100 });
 
       const subdoc = t.docs.create({ name: 'yep' });
@@ -521,28 +552,24 @@ describe('types.documentarray', function() {
         // has no parent array
         subdoc.invalidate('name', 'junk', 47);
       });
-      t.validate(function() {
-        const e = t.errors['docs.0.name'];
-        assert.ok(e);
-        assert.equal(e.path, 'docs.0.name');
-        assert.equal(e.kind, 'user defined');
-        assert.equal(e.message, 'boo boo');
-        assert.equal(e.value, '%');
-        done();
-      });
+      await t.validate().catch(() => {});
+      const e = t.errors['docs.0.name'];
+      assert.ok(e);
+      assert.equal(e.path, 'docs.0.name');
+      assert.equal(e.kind, 'user defined');
+      assert.equal(e.message, 'boo boo');
+      assert.equal(e.value, '%');
     });
 
-    it('handles validation failures', function(done) {
+    it('handles validation failures', async function() {
       const nested = new Schema({ v: { type: Number, max: 30 } });
       const schema = new Schema({
         docs: [nested]
       });
       const M = db.model('Test', schema);
       const m = new M({ docs: [{ v: 900 }] });
-      m.save(function(err) {
-        assert.equal(err.errors['docs.0.v'].value, 900);
-        done();
-      });
+      const err = await m.save().then(() => null, err => err);
+      assert.equal(err.errors['docs.0.v'].value, 900);
     });
 
     it('clears listeners on cast error (gh-6723)', function() {
@@ -576,7 +603,7 @@ describe('types.documentarray', function() {
       assert.equal(doc.docs.length, 2);
     });
 
-    it('map() works', function() {
+    it('map() works (gh-8317)', function() {
       const personSchema = new Schema({ friends: [{ name: { type: String } }] });
       mongoose.deleteModel(/Test/);
       const Person = mongoose.model('Test', personSchema);
@@ -634,7 +661,7 @@ describe('types.documentarray', function() {
     });
   });
 
-  it('cleans modified subpaths on splice() (gh-7249)', function() {
+  it('cleans modified subpaths on splice() (gh-7249)', async function() {
     const childSchema = mongoose.Schema({
       name: { type: String, required: true }
     }, { _id: false });
@@ -645,22 +672,21 @@ describe('types.documentarray', function() {
 
     const Parent = db.model('Test', parentSchema);
 
-    return co(function*() {
-      let parent = yield Parent.create({
-        children: [{ name: '1' }, { name: '2' }]
-      });
 
-      parent = yield Parent.findOne();
-
-      parent.children[1].name = '3';
-      parent.children.splice(0, 1);
-
-      yield parent.save();
-
-      parent = yield Parent.findOne();
-
-      assert.deepEqual(parent.toObject().children, [{ name: '3' }]);
+    let parent = await Parent.create({
+      children: [{ name: '1' }, { name: '2' }]
     });
+
+    parent = await Parent.findOne();
+
+    parent.children[1].name = '3';
+    parent.children.splice(0, 1);
+
+    await parent.save();
+
+    parent = await Parent.findOne();
+
+    assert.deepEqual(parent.toObject().children, [{ name: '3' }]);
   });
 
   it('modifies ownerDocument() on set (gh-8479)', function() {
@@ -690,6 +716,23 @@ describe('types.documentarray', function() {
     assert.equal(doc1.subDocArray[0].ownerDocument().name, 'doc1');
   });
 
+  it('modifying subdoc path after `slice()` (gh-8356)', function() {
+    mongoose.deleteModel(/Test/);
+    const nestedArraySchema = Schema({
+      name: String,
+      subDocArray: [{ name: String }]
+    });
+
+    const Model = db.model('Test', nestedArraySchema);
+    const doc = new Model().init({
+      name: 'test',
+      subDocArray: [{ name: 'foo' }, { name: 'bar' }]
+    });
+
+    doc.subDocArray.slice(1, 2)[0].name = 'baz';
+    assert.ok(doc.isModified('subDocArray.1.name'));
+  });
+
   it('supports setting to newly constructed array with no path or parent (gh-8108)', function() {
     const nestedArraySchema = Schema({
       name: String,
@@ -706,5 +749,1304 @@ describe('types.documentarray', function() {
     return doc.save().
       then(() => Model.findById(doc)).
       then(doc => assert.deepEqual(doc.toObject().subDocArray, [{ name: 'foo' }]));
+  });
+
+  it('keeps atomics after setting (gh-10272)', function() {
+    const MyChildSchema = new Schema({
+      name: String
+    });
+
+    const MyModelSchema = new Schema({
+      children: [MyChildSchema]
+    });
+
+    const Test = db.model('Test', MyModelSchema);
+
+    const doc = new Test();
+    doc.init({
+      children: [{ name: 'John' }, { name: 'Jane' }]
+    });
+
+    doc.children = [{ name: 'John' }];
+    doc.children = doc.children.concat([]);
+    doc.children.push({ name: 'Mary' });
+
+    assert.ok(doc.children.$atomics().$set);
+    assert.deepEqual(doc.children.$atomics().$set.map(v => v.name), ['John', 'Mary']);
+  });
+
+  it('handles `DocumentArray#create()` with populated paths (gh-10749)', async function() {
+    const schema = new Schema({ subdoc: { ref: 'Test2', type: 'ObjectId' }, arr: [{ num: Number }] });
+    const Test = mongoose.model('Test', schema);
+    const Test2 = mongoose.model('Test2', Schema({ name: String }));
+
+    const doc2 = new Test2({ name: 'test' });
+    const doc = new Test({ subdoc: doc2, arr: [] });
+
+    const subdoc = doc.arr.create({ num: '42' });
+    await subdoc.validate();
+    assert.strictEqual(subdoc.num, 42);
+
+    doc.arr.push(subdoc);
+    await doc.validate();
+  });
+
+  it('applies _id default (gh-12264)', function() {
+    mongoose.deleteModel(/Test/);
+    const nestedArraySchema = Schema({
+      subDocArray: [{ name: String }]
+    });
+
+    const Model = db.model('Test', nestedArraySchema);
+    const doc = new Model().init({
+      subDocArray: [{ name: 'foo' }]
+    });
+
+    assert.ok(doc.subDocArray[0]._id instanceof mongoose.Types.ObjectId);
+  });
+
+  it('gets correct path when underneath map (gh-12997)', function() {
+    const mapArraySchema = Schema({
+      myMap: {
+        type: Map,
+        of: [Schema({ name: String })]
+      }
+    });
+
+    const Model = db.model('Test', mapArraySchema);
+    const doc = new Model({
+      myMap: {
+        foo: [{ name: 'bar' }]
+      }
+    });
+
+    assert.equal(doc.myMap.get('foo').$path(), 'myMap.foo');
+  });
+
+  it('bubbles up validation errors from doubly nested doc arrays (gh-14101)', async function() {
+    const optionsSchema = new mongoose.Schema({
+      val: {
+        type: Number,
+        required: true
+      }
+    });
+
+    const testSchema = new mongoose.Schema({
+      name: String,
+      options: {
+        type: [[optionsSchema]],
+        required: true
+      }
+    });
+
+    const Test = db.model('Test', testSchema);
+
+    await assert.rejects(
+      Test.create({ name: 'test', options: [[{ val: null }]] }),
+      /options.0.0.val: Path `val` is required./
+    );
+  });
+
+  it('tracks changes to arrays inside subdocs of doubly nested doc arrays after init', async function() {
+    const cellSchema = new mongoose.Schema({
+      name: String,
+      tags: [String],
+      children: [new mongoose.Schema({ v: Number }, { _id: false })]
+    }, { _id: false });
+    const Test = db.model('Test', new mongoose.Schema({ grid: [[cellSchema]] }));
+
+    const { _id } = await Test.create({
+      grid: [
+        [{ name: 'a', tags: ['a1'], children: [] }, { name: 'b', tags: ['b1'], children: [] }],
+        [{ name: 'c', tags: ['c1', 'c2'], children: [{ v: 1 }, { v: 2 }] }]
+      ]
+    });
+
+    const doc = await Test.findById(_id).orFail();
+    doc.grid[0][1].tags.push('b2');
+    doc.grid[1][0].tags.push('c3');
+    doc.grid[1][0].children[1].v = 3;
+    assert.deepStrictEqual(doc.$getChanges(), {
+      $push: {
+        'grid.0.1.tags': { $each: ['b2'] },
+        'grid.1.0.tags': { $each: ['c3'] }
+      },
+      $set: { 'grid.1.0.children.1.v': 3 },
+      $inc: { __v: 1 }
+    });
+    await doc.save();
+
+    const fromDb = await Test.findById(_id).lean().orFail();
+    assert.deepStrictEqual(fromDb.grid[0][1].tags, ['b1', 'b2']);
+    assert.deepStrictEqual(fromDb.grid[1][0].tags, ['c1', 'c2', 'c3']);
+    assert.deepStrictEqual(fromDb.grid[1][0].children, [{ v: 1 }, { v: 3 }]);
+  });
+
+  it('stores all schematype options in the embedded schematype', function() {
+    const schema = new mongoose.Schema({
+      docArr: [{
+        type: new mongoose.Schema({ name: String }),
+        someCustomOption: 'test 42'
+      }]
+    });
+    assert.strictEqual(schema.path('docArr').getEmbeddedSchemaType().options.someCustomOption, 'test 42');
+  });
+
+  it('updates __index when reassigning array with reordered subdocs (gh-15973)', async function() {
+    const childSchema = new mongoose.Schema({
+      id: Number,
+      v: Number
+    });
+
+    const parentSchema = new mongoose.Schema({
+      _id: String,
+      array: {
+        type: [childSchema],
+        _id: false
+      }
+    });
+
+    const Test = db.model('Test', parentSchema);
+
+    await Test.deleteOne({ _id: 'test' });
+    await Test.create({
+      _id: 'test',
+      array: [
+        { id: 1, v: 0 },
+        { id: 2, v: 0 }
+      ]
+    });
+
+    const doc = await Test.findById('test').orFail();
+
+    // Reassign array with elements in reversed order
+    doc.array = [doc.array[1], doc.array[0]];
+    await doc.save();
+
+    // Modify the first element (which was originally at index 1)
+    doc.array[0].v = 999;
+
+    // The modified path should be array.0.v, not array.1.v
+    assert.ok(doc.modifiedPaths().includes('array.0.v'));
+    assert.ok(!doc.modifiedPaths().includes('array.1.v'));
+
+    await doc.save();
+
+    const fetched = await Test.findById('test').orFail().lean();
+    assert.strictEqual(fetched.array[0].v, 999);
+    assert.strictEqual(fetched.array[1].v, 0);
+  });
+
+  describe('document array indexes after removal', function() {
+    it('reindexes subdocs after pull() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.pull(user.addresses[0]._id);
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[0].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'first remaining subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.0', 'addresses.0.city']);
+      assert.deepStrictEqual(user.$getChanges(), { $set: { 'addresses.0.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.strictEqual(fetched.addresses[0].city, 'New York');
+      assert.strictEqual(fetched.addresses[1].city, 'Denver');
+    });
+
+    it('reindexes subdocs after splice() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.splice(0, 1);
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[0].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'first remaining subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.0', 'addresses.0.city']);
+      assert.deepStrictEqual(user.$getChanges(), { $set: { 'addresses.0.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.strictEqual(fetched.addresses[0].city, 'New York');
+      assert.strictEqual(fetched.addresses[1].city, 'Denver');
+    });
+
+    it('reindexes subdocs after shift() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.shift();
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[0].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'first remaining subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.0', 'addresses.0.city']);
+      assert.deepStrictEqual(user.$getChanges(), { $set: { 'addresses.0.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.strictEqual(fetched.addresses[0].city, 'New York');
+      assert.strictEqual(fetched.addresses[1].city, 'Denver');
+    });
+
+    it('reindexes subdocs after $shift() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.$shift();
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[0].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'first remaining subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.0', 'addresses.0.city']);
+      assert.deepStrictEqual(user.$getChanges(), { $set: { 'addresses.0.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.strictEqual(fetched.addresses[0].city, 'New York');
+      assert.strictEqual(fetched.addresses[1].city, 'Denver');
+    });
+
+    async function createTestContext() {
+      const addressSchema = new mongoose.Schema({
+        street: String,
+        city: String
+      });
+      const userSchema = new mongoose.Schema({
+        name: String,
+        addresses: [addressSchema]
+      });
+      const User = db.model('UserDocumentArrayIndex', userSchema);
+      const user = new User({
+        name: 'John',
+        addresses: [
+          { street: '1 Main', city: 'Boston' },
+          { street: '2 Main', city: 'Chicago' },
+          { street: '3 Main', city: 'Denver' }
+        ]
+      });
+      await user.save();
+
+      return { User, user };
+    }
+  });
+
+  describe('document array indexes after reordering', function() {
+    it('reindexes subdocs after unshift() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.unshift({ street: '0 Main', city: 'Amsterdam' });
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[1].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[1].$__fullPath('city'),
+        'addresses.1.city',
+        'shifted subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.1', 'addresses.1.city']);
+      assert.deepStrictEqual(user.$getChanges(), { $set: { 'addresses.1.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.deepStrictEqual(
+        fetched.addresses.map(address => address.city),
+        ['Amsterdam', 'New York', 'Chicago', 'Denver']
+      );
+    });
+
+    it('reindexes subdocs after positioned push() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.push({
+        $each: [
+          { street: '0 Main', city: 'Amsterdam' },
+          { street: '0 Main', city: 'Rotterdam' }
+        ],
+        $position: 0
+      });
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[1].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'first positioned pushed subdoc should use its current array index'
+      );
+      assert.strictEqual(
+        user.addresses[1].$__fullPath('city'),
+        'addresses.1.city',
+        'second positioned pushed subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.1', 'addresses.1.city']);
+      assert.deepStrictEqual(user.$getChanges(), { $set: { 'addresses.1.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.deepStrictEqual(
+        fetched.addresses.map(address => address.city),
+        ['Amsterdam', 'New York', 'Boston', 'Chicago', 'Denver']
+      );
+    });
+
+    it('does not restamp existing subdocs after append-only push()', async function() {
+      // Arrange
+      const { user } = await createTestContext();
+      const originalSetIndex = user.addresses[0].$setIndex;
+      let setIndexCalls = 0;
+      user.addresses[0].$setIndex = function(index) {
+        ++setIndexCalls;
+        return originalSetIndex.call(this, index);
+      };
+
+      // Act
+      user.addresses.push({ street: '4 Main', city: 'Austin' });
+
+      // Assert
+      assert.strictEqual(setIndexCalls, 0);
+      assert.strictEqual(
+        user.addresses[3].$__fullPath('city'),
+        'addresses.3.city',
+        'appended subdoc should use its appended array index'
+      );
+      assert.deepStrictEqual(user.$getChanges(), {
+        $push: {
+          addresses: {
+            $each: [{ street: '4 Main', city: 'Austin', _id: user.addresses[3]._id }]
+          }
+        },
+        $inc: { __v: 1 }
+      });
+    });
+
+    it('reindexes subdocs after sort() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.sort((a, b) => b.city.localeCompare(a.city));
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[0].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'sorted subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.0', 'addresses.0.city']);
+      assert.deepStrictEqual(user.$getChanges(), { $set: { 'addresses.0.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.deepStrictEqual(
+        fetched.addresses.map(address => address.city),
+        ['New York', 'Chicago', 'Boston']
+      );
+    });
+
+    it('keeps subdoc indexes correct after reverse() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.reverse();
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[0].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'reversed subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.0', 'addresses.0.city']);
+      assert.deepStrictEqual(user.$getChanges(), { $set: { 'addresses.0.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.deepStrictEqual(
+        fetched.addresses.map(address => address.city),
+        ['New York', 'Chicago', 'Boston']
+      );
+    });
+
+    it('registers full array atomics after reverse() follows append-only push()', async function() {
+      // Arrange
+      const { user } = await createTestContext();
+      user.addresses.push({ street: '4 Main', city: 'Austin' });
+      assert.deepStrictEqual(Object.keys(user.addresses.$atomics()), ['$push'], 'sanity: append-only push starts as $push');
+
+      // Act
+      const ret = user.addresses.reverse();
+
+      // Assert
+      assert.strictEqual(ret, user.addresses);
+      assert.deepStrictEqual(Object.keys(user.addresses.$atomics()), ['$set']);
+      assert.deepStrictEqual(
+        user.addresses.$atomics().$set.map(address => address.city),
+        ['Austin', 'Denver', 'Chicago', 'Boston']
+      );
+      assert.deepStrictEqual(user.$getChanges(), {
+        $set: {
+          addresses: [
+            { street: '4 Main', city: 'Austin', _id: user.addresses[0]._id },
+            { street: '3 Main', city: 'Denver', _id: user.addresses[1]._id },
+            { street: '2 Main', city: 'Chicago', _id: user.addresses[2]._id },
+            { street: '1 Main', city: 'Boston', _id: user.addresses[3]._id }
+          ]
+        },
+        $inc: { __v: 1 }
+      });
+    });
+
+    async function createTestContext() {
+      const addressSchema = new mongoose.Schema({
+        street: String,
+        city: String
+      });
+      const userSchema = new mongoose.Schema({
+        name: String,
+        addresses: [addressSchema]
+      });
+      const User = db.model('UserDocumentArrayReorderIndex', userSchema);
+      const user = new User({
+        name: 'John',
+        addresses: [
+          { street: '1 Main', city: 'Boston' },
+          { street: '2 Main', city: 'Chicago' },
+          { street: '3 Main', city: 'Denver' }
+        ]
+      });
+      await user.save();
+
+      return { User, user };
+    }
+  });
+
+  describe('document array indexes after addToSet', function() {
+    it('reindexes subdocs after addToSet() skips a duplicate so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      const added = user.addresses.addToSet(
+        { _id: user.addresses[0]._id, street: '1 Main', city: 'Boston' },
+        { street: '4 Main', city: 'Amsterdam' },
+        { street: '5 Main', city: 'Rotterdam' }
+      );
+      assert.deepStrictEqual(
+        added.map(address => address.city),
+        ['Amsterdam', 'Rotterdam'],
+        'sanity: the duplicate is skipped and only the new subdocs are added'
+      );
+      assert.deepStrictEqual(
+        user.addresses.map(address => address.city),
+        ['Boston', 'Chicago', 'Denver', 'Amsterdam', 'Rotterdam']
+      );
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[3].city = 'New York';
+
+      // Assert
+      assert.deepStrictEqual(
+        user.addresses.map(address => address.__index),
+        [0, 1, 2, 3, 4]
+      );
+      assert.strictEqual(
+        user.addresses[3].$__fullPath('city'),
+        'addresses.3.city',
+        'subdoc added after a skipped duplicate should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.3', 'addresses.3.city']);
+      assert.deepStrictEqual(user.$getChanges(), { $set: { 'addresses.3.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.deepStrictEqual(
+        fetched.addresses.map(address => address.city),
+        ['Boston', 'Chicago', 'Denver', 'New York', 'Rotterdam']
+      );
+    });
+
+    it('reports validation errors on addToSet() subdocs at their current array index', async function() {
+      // Arrange
+      const { user } = await createTestContext();
+      user.addresses.addToSet(
+        { _id: user.addresses[0]._id, street: '1 Main', city: 'Boston' },
+        { city: 'Amsterdam' }
+      );
+
+      // Act
+      const err = user.validateSync();
+
+      // Assert
+      assert.deepStrictEqual(Object.keys(err.errors), ['addresses.3.street']);
+    });
+
+    async function createTestContext() {
+      const addressSchema = new mongoose.Schema({
+        street: { type: String, required: true },
+        city: String
+      });
+      const userSchema = new mongoose.Schema({
+        name: String,
+        addresses: [addressSchema]
+      });
+      const User = db.model('UserDocumentArrayAddToSetIndex', userSchema);
+      const user = new User({
+        name: 'John',
+        addresses: [
+          { street: '1 Main', city: 'Boston' },
+          { street: '2 Main', city: 'Chicago' },
+          { street: '3 Main', city: 'Denver' }
+        ]
+      });
+      await user.save();
+
+      return { User, user };
+    }
+  });
+
+  describe('document array populated paths', function() {
+    it('updates top-level populated() after sort() reorders a document array', async function() {
+      // Arrange
+      const { Trip, locations, trip, getPopulatedLocationIds } = await createTestContext();
+      const fromDb = await Trip.findById(trip._id).orFail().populate('stops.location');
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        locations.map(location => location._id.toString())
+      );
+
+      // Act
+      fromDb.stops.sort((left, right) => left.sequence - right.sequence);
+
+      // Assert
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        [
+          locations[1]._id.toString(),
+          locations[0]._id.toString(),
+          locations[2]._id.toString()
+        ]
+      );
+    });
+
+    it('updates top-level populated() after reverse() reorders a document array', async function() {
+      // Arrange
+      const { Trip, locations, trip, getPopulatedLocationIds } = await createTestContext();
+      const fromDb = await Trip.findById(trip._id).orFail().populate('stops.location');
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        locations.map(location => location._id.toString())
+      );
+
+      // Act
+      fromDb.stops.reverse();
+
+      // Assert
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        [
+          locations[2]._id.toString(),
+          locations[1]._id.toString(),
+          locations[0]._id.toString()
+        ]
+      );
+    });
+
+    it('updates top-level populated() after pop() removes the last subdoc', async function() {
+      // Arrange
+      const { Trip, locations, trip, getPopulatedLocationIds } = await createTestContext();
+      const fromDb = await Trip.findById(trip._id).orFail().populate('stops.location');
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        locations.map(location => location._id.toString())
+      );
+
+      // Act
+      fromDb.stops.pop();
+
+      // Assert
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        [locations[0]._id.toString(), locations[1]._id.toString()]
+      );
+    });
+
+    it('updates top-level populated() after $pop() removes the last subdoc', async function() {
+      // Arrange
+      const { Trip, locations, trip, getPopulatedLocationIds } = await createTestContext();
+      const fromDb = await Trip.findById(trip._id).orFail().populate('stops.location');
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        locations.map(location => location._id.toString())
+      );
+
+      // Act
+      fromDb.stops.$pop();
+
+      // Assert
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        [locations[0]._id.toString(), locations[1]._id.toString()]
+      );
+    });
+
+    async function createTestContext() {
+      const locationSchema = new Schema({ name: String });
+      const stopSchema = new Schema({
+        location: { type: Schema.Types.ObjectId, ref: 'Location' },
+        sequence: Number
+      });
+      const tripSchema = new Schema({
+        name: String,
+        stops: [stopSchema]
+      });
+      const Location = db.model('Location', locationSchema);
+      const Trip = db.model('Trip', tripSchema);
+      const locations = await Location.create([
+        { name: 'Boston' },
+        { name: 'Chicago' },
+        { name: 'Denver' }
+      ]);
+      const trip = await Trip.create({
+        name: 'Route planning',
+        stops: [
+          { location: locations[0]._id, sequence: 2 },
+          { location: locations[1]._id, sequence: 1 },
+          { location: locations[2]._id, sequence: 3 }
+        ]
+      });
+
+      return { Trip, locations, trip, getPopulatedLocationIds };
+    }
+
+    function getPopulatedLocationIds(trip) {
+      return trip.populated('stops.location').map(id => id.toString());
+    }
+  });
+
+  it('clones subdoc when same subdoc reference appears multiple times in array (gh-15973)', async function() {
+    const childSchema = new mongoose.Schema({
+      id: Number,
+      v: Number
+    });
+
+    const parentSchema = new mongoose.Schema({
+      _id: String,
+      array: {
+        type: [childSchema],
+        _id: false
+      }
+    });
+
+    const Test = db.model('Test', parentSchema);
+
+    await Test.deleteOne({ _id: 'test' });
+    await Test.create({
+      _id: 'test',
+      array: [{ id: 1, v: 0 }]
+    });
+
+    const doc = await Test.findById('test').orFail();
+
+    // Add the same subdocument twice
+    const subdoc = doc.array[0];
+    doc.array = [subdoc, subdoc];
+
+    // The two array elements should be different objects (cloned)
+    assert.notStrictEqual(doc.array[0], doc.array[1]);
+    assert.strictEqual(doc.array[0].__index, 0);
+    assert.strictEqual(doc.array[1].__index, 1);
+
+    await doc.save();
+
+    // Modify only the second element
+    doc.array[1].v = 999;
+
+    // Should only affect array[1], not array[0]
+    assert.strictEqual(doc.array[0].v, 0);
+    assert.strictEqual(doc.array[1].v, 999);
+    assert.ok(doc.modifiedPaths().includes('array.1.v'));
+    assert.ok(!doc.modifiedPaths().includes('array.0.v'));
+
+    await doc.save();
+
+    const fetched = await Test.findById('test').orFail().lean();
+    assert.strictEqual(fetched.array[0].v, 0);
+    assert.strictEqual(fetched.array[1].v, 999);
+  });
+
+  describe('document array indexes after addToSet', function() {
+    it('reindexes subdocs after addToSet() skips a duplicate so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      const added = user.addresses.addToSet(
+        { _id: user.addresses[0]._id, street: '1 Main', city: 'Boston' },
+        { street: '4 Main', city: 'Amsterdam' },
+        { street: '5 Main', city: 'Rotterdam' }
+      );
+      assert.deepStrictEqual(
+        added.map(address => address.city),
+        ['Amsterdam', 'Rotterdam'],
+        'sanity: the duplicate is skipped and only the new subdocs are added'
+      );
+      assert.deepStrictEqual(
+        user.addresses.map(address => address.city),
+        ['Boston', 'Chicago', 'Denver', 'Amsterdam', 'Rotterdam']
+      );
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[3].city = 'New York';
+
+      // Assert
+      assert.deepStrictEqual(
+        user.addresses.map(address => address.__index),
+        [0, 1, 2, 3, 4]
+      );
+      assert.strictEqual(
+        user.addresses[3].$__fullPath('city'),
+        'addresses.3.city',
+        'subdoc added after a skipped duplicate should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.3', 'addresses.3.city']);
+      assert.deepStrictEqual(user.getChanges(), { $set: { 'addresses.3.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.deepStrictEqual(
+        fetched.addresses.map(address => address.city),
+        ['Boston', 'Chicago', 'Denver', 'New York', 'Rotterdam']
+      );
+    });
+
+    it('reports validation errors on addToSet() subdocs at their current array index', async function() {
+      // Arrange
+      const { user } = await createTestContext();
+      user.addresses.addToSet(
+        { _id: user.addresses[0]._id, street: '1 Main', city: 'Boston' },
+        { city: 'Amsterdam' }
+      );
+
+      // Act
+      const err = user.validateSync();
+
+      // Assert
+      assert.deepStrictEqual(Object.keys(err.errors), ['addresses.3.street']);
+    });
+
+    async function createTestContext() {
+      const addressSchema = new mongoose.Schema({
+        street: { type: String, required: true },
+        city: String
+      });
+      const userSchema = new mongoose.Schema({
+        name: String,
+        addresses: [addressSchema]
+      });
+      const User = db.model('UserDocumentArrayAddToSetIndex', userSchema);
+      const user = new User({
+        name: 'John',
+        addresses: [
+          { street: '1 Main', city: 'Boston' },
+          { street: '2 Main', city: 'Chicago' },
+          { street: '3 Main', city: 'Denver' }
+        ]
+      });
+      await user.save();
+
+      return { User, user };
+    }
+  });
+
+  describe('document array indexes after removal', function() {
+    it('reindexes subdocs after pull() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.pull(user.addresses[0]._id);
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[0].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'first remaining subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.0', 'addresses.0.city']);
+      assert.deepStrictEqual(user.getChanges(), { $set: { 'addresses.0.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.strictEqual(fetched.addresses[0].city, 'New York');
+      assert.strictEqual(fetched.addresses[1].city, 'Denver');
+    });
+
+    it('reindexes subdocs after splice() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.splice(0, 1);
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[0].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'first remaining subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.0', 'addresses.0.city']);
+      assert.deepStrictEqual(user.getChanges(), { $set: { 'addresses.0.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.strictEqual(fetched.addresses[0].city, 'New York');
+      assert.strictEqual(fetched.addresses[1].city, 'Denver');
+    });
+
+    it('reindexes subdocs after shift() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.shift();
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[0].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'first remaining subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.0', 'addresses.0.city']);
+      assert.deepStrictEqual(user.getChanges(), { $set: { 'addresses.0.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.strictEqual(fetched.addresses[0].city, 'New York');
+      assert.strictEqual(fetched.addresses[1].city, 'Denver');
+    });
+
+    it('reindexes subdocs after $shift() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.$shift();
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[0].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'first remaining subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.0', 'addresses.0.city']);
+      assert.deepStrictEqual(user.getChanges(), { $set: { 'addresses.0.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.strictEqual(fetched.addresses[0].city, 'New York');
+      assert.strictEqual(fetched.addresses[1].city, 'Denver');
+    });
+
+    async function createTestContext() {
+      const addressSchema = new mongoose.Schema({
+        street: String,
+        city: String
+      });
+      const userSchema = new mongoose.Schema({
+        name: String,
+        addresses: [addressSchema]
+      });
+      const User = db.model('UserDocumentArrayIndex', userSchema);
+      const user = new User({
+        name: 'John',
+        addresses: [
+          { street: '1 Main', city: 'Boston' },
+          { street: '2 Main', city: 'Chicago' },
+          { street: '3 Main', city: 'Denver' }
+        ]
+      });
+      await user.save();
+
+      return { User, user };
+    }
+  });
+
+  describe('document array indexes after reordering', function() {
+    it('reindexes subdocs after unshift() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.unshift({ street: '0 Main', city: 'Amsterdam' });
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[1].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[1].$__fullPath('city'),
+        'addresses.1.city',
+        'shifted subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.1', 'addresses.1.city']);
+      assert.deepStrictEqual(user.getChanges(), { $set: { 'addresses.1.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.deepStrictEqual(
+        fetched.addresses.map(address => address.city),
+        ['Amsterdam', 'New York', 'Chicago', 'Denver']
+      );
+    });
+
+    it('reindexes subdocs after positioned push() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.push({
+        $each: [
+          { street: '0 Main', city: 'Amsterdam' },
+          { street: '0 Main', city: 'Rotterdam' }
+        ],
+        $position: 0
+      });
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[1].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'first positioned pushed subdoc should use its current array index'
+      );
+      assert.strictEqual(
+        user.addresses[1].$__fullPath('city'),
+        'addresses.1.city',
+        'second positioned pushed subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.1', 'addresses.1.city']);
+      assert.deepStrictEqual(user.getChanges(), { $set: { 'addresses.1.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.deepStrictEqual(
+        fetched.addresses.map(address => address.city),
+        ['Amsterdam', 'New York', 'Boston', 'Chicago', 'Denver']
+      );
+    });
+
+    it('does not restamp existing subdocs after append-only push()', async function() {
+      // Arrange
+      const { user } = await createTestContext();
+      const originalSetIndex = user.addresses[0].$setIndex;
+      let setIndexCalls = 0;
+      user.addresses[0].$setIndex = function(index) {
+        ++setIndexCalls;
+        return originalSetIndex.call(this, index);
+      };
+
+      // Act
+      user.addresses.push({ street: '4 Main', city: 'Austin' });
+
+      // Assert
+      assert.strictEqual(setIndexCalls, 0);
+      assert.strictEqual(
+        user.addresses[3].$__fullPath('city'),
+        'addresses.3.city',
+        'appended subdoc should use its appended array index'
+      );
+      assert.deepStrictEqual(user.getChanges(), {
+        $push: {
+          addresses: {
+            $each: [{ street: '4 Main', city: 'Austin', _id: user.addresses[3]._id }]
+          }
+        },
+        $inc: { __v: 1 }
+      });
+    });
+
+    it('reindexes subdocs after sort() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.sort((a, b) => b.city.localeCompare(a.city));
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[0].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'sorted subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.0', 'addresses.0.city']);
+      assert.deepStrictEqual(user.getChanges(), { $set: { 'addresses.0.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.deepStrictEqual(
+        fetched.addresses.map(address => address.city),
+        ['New York', 'Chicago', 'Boston']
+      );
+    });
+
+    it('keeps subdoc indexes correct after reverse() so subsequent nested changes save correctly', async function() {
+      // Arrange
+      const { User, user } = await createTestContext();
+      user.addresses.reverse();
+      await user.save();
+      assert.strictEqual(user.isModified(), false, 'sanity: saved doc starts clean');
+
+      // Act
+      user.addresses[0].city = 'New York';
+
+      // Assert
+      assert.strictEqual(
+        user.addresses[0].$__fullPath('city'),
+        'addresses.0.city',
+        'reversed subdoc should use its current array index'
+      );
+      assert.deepStrictEqual(user.modifiedPaths(), ['addresses', 'addresses.0', 'addresses.0.city']);
+      assert.deepStrictEqual(user.getChanges(), { $set: { 'addresses.0.city': 'New York' } });
+
+      await user.save();
+      const fetched = await User.findById(user._id).orFail().lean();
+      assert.deepStrictEqual(
+        fetched.addresses.map(address => address.city),
+        ['New York', 'Chicago', 'Boston']
+      );
+    });
+
+    it('registers full array atomics after reverse() follows append-only push()', async function() {
+      // Arrange
+      const { user } = await createTestContext();
+      user.addresses.push({ street: '4 Main', city: 'Austin' });
+      assert.deepStrictEqual(Object.keys(user.addresses.$atomics()), ['$push'], 'sanity: append-only push starts as $push');
+
+      // Act
+      const ret = user.addresses.reverse();
+
+      // Assert
+      assert.strictEqual(ret, user.addresses);
+      assert.deepStrictEqual(Object.keys(user.addresses.$atomics()), ['$set']);
+      assert.deepStrictEqual(
+        user.addresses.$atomics().$set.map(address => address.city),
+        ['Austin', 'Denver', 'Chicago', 'Boston']
+      );
+      assert.deepStrictEqual(user.getChanges(), {
+        $set: {
+          addresses: [
+            { street: '4 Main', city: 'Austin', _id: user.addresses[0]._id },
+            { street: '3 Main', city: 'Denver', _id: user.addresses[1]._id },
+            { street: '2 Main', city: 'Chicago', _id: user.addresses[2]._id },
+            { street: '1 Main', city: 'Boston', _id: user.addresses[3]._id }
+          ]
+        },
+        $inc: { __v: 1 }
+      });
+    });
+
+    async function createTestContext() {
+      const addressSchema = new mongoose.Schema({
+        street: String,
+        city: String
+      });
+      const userSchema = new mongoose.Schema({
+        name: String,
+        addresses: [addressSchema]
+      });
+      const User = db.model('UserDocumentArrayReorderIndex', userSchema);
+      const user = new User({
+        name: 'John',
+        addresses: [
+          { street: '1 Main', city: 'Boston' },
+          { street: '2 Main', city: 'Chicago' },
+          { street: '3 Main', city: 'Denver' }
+        ]
+      });
+      await user.save();
+
+      return { User, user };
+    }
+  });
+
+  describe('document array populated paths', function() {
+    it('updates top-level populated() after sort() reorders a document array', async function() {
+      // Arrange
+      const { Trip, locations, trip, getPopulatedLocationIds } = await createTestContext();
+      const fromDb = await Trip.findById(trip._id).orFail().populate('stops.location');
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        locations.map(location => location._id.toString())
+      );
+
+      // Act
+      fromDb.stops.sort((left, right) => left.sequence - right.sequence);
+
+      // Assert
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        [
+          locations[1]._id.toString(),
+          locations[0]._id.toString(),
+          locations[2]._id.toString()
+        ]
+      );
+    });
+
+    it('updates top-level populated() after reverse() reorders a document array', async function() {
+      // Arrange
+      const { Trip, locations, trip, getPopulatedLocationIds } = await createTestContext();
+      const fromDb = await Trip.findById(trip._id).orFail().populate('stops.location');
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        locations.map(location => location._id.toString())
+      );
+
+      // Act
+      fromDb.stops.reverse();
+
+      // Assert
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        [
+          locations[2]._id.toString(),
+          locations[1]._id.toString(),
+          locations[0]._id.toString()
+        ]
+      );
+    });
+
+    it('updates top-level populated() after pop() removes the last subdoc', async function() {
+      // Arrange
+      const { Trip, locations, trip, getPopulatedLocationIds } = await createTestContext();
+      const fromDb = await Trip.findById(trip._id).orFail().populate('stops.location');
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        locations.map(location => location._id.toString())
+      );
+
+      // Act
+      fromDb.stops.pop();
+
+      // Assert
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        [locations[0]._id.toString(), locations[1]._id.toString()]
+      );
+    });
+
+    it('updates top-level populated() after $pop() removes the last subdoc', async function() {
+      // Arrange
+      const { Trip, locations, trip, getPopulatedLocationIds } = await createTestContext();
+      const fromDb = await Trip.findById(trip._id).orFail().populate('stops.location');
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        locations.map(location => location._id.toString())
+      );
+
+      // Act
+      fromDb.stops.$pop();
+
+      // Assert
+      assert.deepStrictEqual(
+        getPopulatedLocationIds(fromDb),
+        [locations[0]._id.toString(), locations[1]._id.toString()]
+      );
+    });
+
+    async function createTestContext() {
+      const locationSchema = new Schema({ name: String });
+      const stopSchema = new Schema({
+        location: { type: Schema.Types.ObjectId, ref: 'Location' },
+        sequence: Number
+      });
+      const tripSchema = new Schema({
+        name: String,
+        stops: [stopSchema]
+      });
+      const Location = db.model('Location', locationSchema);
+      const Trip = db.model('Trip', tripSchema);
+      const locations = await Location.create([
+        { name: 'Boston' },
+        { name: 'Chicago' },
+        { name: 'Denver' }
+      ]);
+      const trip = await Trip.create({
+        name: 'Route planning',
+        stops: [
+          { location: locations[0]._id, sequence: 2 },
+          { location: locations[1]._id, sequence: 1 },
+          { location: locations[2]._id, sequence: 3 }
+        ]
+      });
+
+      return { Trip, locations, trip, getPopulatedLocationIds };
+    }
+
+    function getPopulatedLocationIds(trip) {
+      return trip.populated('stops.location').map(id => id.toString());
+    }
   });
 });

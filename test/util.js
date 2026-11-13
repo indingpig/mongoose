@@ -1,23 +1,35 @@
 'use strict';
+const mongoose = require('../index');
 
-exports.clearTestData = function clearTestData(db) {
-  if (db.models == null) {
-    return;
+/**
+ * Generates a random string
+ */
+
+exports.random = function() {
+  return Math.random().toString().substring(3);
+};
+
+exports.clearTestData = async function clearTestData(db) {
+  async function _inner() {
+    await db.dropDatabase();
   }
+  // retry the "dropDBs" actions if the error is "operation was interrupted", which can often happen in replset CI tests
+  let retries = 5;
+  while (retries > 0) {
+    retries -= 1;
+    try {
+      await _inner();
+      return;
+    } catch (err) {
+      const retryable = err instanceof mongoose.mongo.MongoWriteConcernError && /operation was interrupted/.test(err.message);
+      if (retryable && retries > 0) {
+        console.log('DropDB operation interrupted, retrying'); // log that a error was thrown to know that it is going to re-try
+        continue;
+      }
 
-  const arr = [];
-
-  for (const model of Object.keys(db.models)) {
-    const Model = db.models[model];
-    if (Model.baseModelName != null) {
-      // Skip discriminators
-      continue;
+      throw err;
     }
-    arr.push(db.models[model].deleteMany({}));
-    arr.push(db.models[model].collection.dropIndexes().catch(() => {}));
   }
-
-  return Promise.all(arr);
 };
 
 exports.stopRemainingOps = function stopRemainingOps(db) {
@@ -27,5 +39,8 @@ exports.stopRemainingOps = function stopRemainingOps(db) {
   for (const name of Object.keys(db.models)) {
     const model = db.models[name];
     model.collection.buffer = true;
+    if (db.collections[model.collection.name] === model.collection) {
+      delete db.collections[model.collection.name];
+    }
   }
 };

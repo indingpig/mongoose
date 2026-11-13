@@ -2,17 +2,18 @@
 
 const assert = require('assert');
 const mongoose = require('../../');
+const start = require('../common');
 
 describe('defaults docs', function() {
   let db;
   const Schema = mongoose.Schema;
 
   before(function() {
-    db = mongoose.createConnection('mongodb://localhost:27017/mongoose_test');
+    db = mongoose.createConnection(start.uri);
   });
 
-  after(function(done) {
-    db.close(done);
+  after(async function() {
+    await db.close();
   });
 
   afterEach(function() {
@@ -26,7 +27,7 @@ describe('defaults docs', function() {
    * Note: Mongoose only applies a default if the value of the path is
    * strictly `undefined`.
    */
-  it('Declaring defaults in your schema', function(done) {
+  it('Declaring defaults in your schema', async function() {
     const schema = new Schema({
       name: String,
       role: { type: String, default: 'guitarist' }
@@ -47,17 +48,12 @@ describe('defaults docs', function() {
     const foo = new Person({ name: 'Bar', role: null });
     assert.strictEqual(foo.role, null);
 
-    Person.create(axl, slash, function(error) {
-      assert.ifError(error);
-      Person.find({ role: 'guitarist' }, function(error, docs) {
-        assert.ifError(error);
-        assert.equal(docs.length, 1);
-        assert.equal(docs[0].name, 'Slash');
-        // acquit:ignore:start
-        done();
-        // acquit:ignore:end
-      });
-    });
+    await Person.create(axl, slash);
+
+    const docs = await Person.find({ role: 'guitarist' });
+
+    assert.equal(docs.length, 1);
+    assert.equal(docs[0].name, 'Slash');
   });
 
   /**
@@ -84,46 +80,46 @@ describe('defaults docs', function() {
   });
 
   /**
-   * By default, mongoose only applies defaults when you create a new document.
-   * It will **not** set defaults if you use `update()` and
-   * `findOneAndUpdate()`. However, mongoose 4.x lets you opt-in to this
-   * behavior using the `setDefaultsOnInsert` option.
+   * Mongoose also applies defaults when you upsert a document.
+   * Mongoose only applies defaults on upsert if a new document is
+   * inserted, not if the upsert updated an existing document.
    *
-   * ## Important
-   *
-   * The `setDefaultsOnInsert` option relies on the
-   * [MongoDB `$setOnInsert` operator](https://docs.mongodb.org/manual/reference/operator/update/setOnInsert/).
-   * The `$setOnInsert` operator was introduced in MongoDB 2.4. If you're
-   * using MongoDB server < 2.4.0, do **not** use `setDefaultsOnInsert`.
    */
-  it('The `setDefaultsOnInsert` option', function(done) {
+  it('The `setDefaultsOnInsert` option', async function() {
     const schema = new Schema({
       title: String,
       genre: { type: String, default: 'Action' }
     });
 
     const Movie = db.model('Movie', schema);
+    // acquit:ignore:start
+    await Movie.deleteMany({});
+    // acquit:ignore:end
 
     const query = {};
     const update = { title: 'The Terminator' };
     const options = {
       // Return the document after updates are applied
       new: true,
-      // Create a document if one isn't found. Required
-      // for `setDefaultsOnInsert`
-      upsert: true,
-      setDefaultsOnInsert: true
+      // Create a document if one isn't found.
+      upsert: true
     };
 
-    Movie.
-      findOneAndUpdate(query, update, options, function(error, doc) {
-        assert.ifError(error);
-        assert.equal(doc.title, 'The Terminator');
-        assert.equal(doc.genre, 'Action');
-        // acquit:ignore:start
-        done();
-        // acquit:ignore:end
-      });
+    let doc = await Movie.findOneAndUpdate(query, update, options).lean();
+    doc.genre; // 'Action', Mongoose set a default value.
+    // acquit:ignore:start
+    assert.equal(doc.title, 'The Terminator');
+    assert.equal(doc.genre, 'Action');
+    // acquit:ignore:end
+
+    await Movie.deleteMany({});
+
+    doc = await Movie.findOneAndUpdate(query, update, { new: true, upsert: true, setDefaultsOnInsert: false }).lean();
+    doc.genre; // undefined, Mongoose did not set a default value
+    // acquit:ignore:start
+    assert.equal(doc.title, 'The Terminator');
+    assert.equal(doc.genre, void 0);
+    // acquit:ignore:end
   });
 
   /**

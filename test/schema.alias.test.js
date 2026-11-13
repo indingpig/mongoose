@@ -7,7 +7,6 @@
 const start = require('./common');
 
 const assert = require('assert');
-const Buffer = require('safe-buffer').Buffer;
 
 const mongoose = start.mongoose;
 const Schema = mongoose.Schema;
@@ -19,15 +18,15 @@ describe('schema alias option', function() {
     db = start();
   });
 
-  after(function(done) {
-    db.close(done);
+  after(async function() {
+    await db.close();
   });
 
   beforeEach(() => db.deleteModel(/.*/));
   afterEach(() => require('./util').clearTestData(db));
   afterEach(() => require('./util').stopRemainingOps(db));
 
-  it('works with all basic schema types', function(done) {
+  it('works with all basic schema types', async function() {
     const schema = new Schema({
       string: { type: String, alias: 'StringAlias' },
       number: { type: Number, alias: 'NumberAlias' },
@@ -40,7 +39,7 @@ describe('schema alias option', function() {
     });
 
     const S = db.model('Test', schema);
-    S.create({
+    const s = await S.create({
       string: 'hello',
       number: 1,
       date: new Date(),
@@ -49,23 +48,20 @@ describe('schema alias option', function() {
       mixed: [1, [], 'three', { four: 5 }],
       objectId: new mongoose.Types.ObjectId(),
       array: ['a', 'b', 'c', 'd']
-    }, function(err, s) {
-      assert.ifError(err);
-
-      // Comparing with aliases
-      assert.equal(s.string, s.StringAlias);
-      assert.equal(s.number, s.NumberAlias);
-      assert.equal(s.date, s.DateAlias);
-      assert.equal(s.buffer, s.BufferAlias);
-      assert.equal(s.boolean, s.BooleanAlias);
-      assert.equal(s.mixed, s.MixedAlias);
-      assert.equal(s.objectId, s.ObjectIdAlias);
-      assert.equal(s.array, s.ArrayAlias);
-      done();
     });
+
+    // Comparing with aliases
+    assert.equal(s.string, s.StringAlias);
+    assert.equal(s.number, s.NumberAlias);
+    assert.equal(s.date, s.DateAlias);
+    assert.equal(s.buffer, s.BufferAlias);
+    assert.equal(s.boolean, s.BooleanAlias);
+    assert.equal(s.mixed, s.MixedAlias);
+    assert.equal(s.objectId, s.ObjectIdAlias);
+    assert.equal(s.array, s.ArrayAlias);
   });
 
-  it('works with nested schema types', function(done) {
+  it('works with nested schema types', async function() {
     const schema = new Schema({
       nested: {
         string: { type: String, alias: 'StringAlias' },
@@ -80,7 +76,7 @@ describe('schema alias option', function() {
     });
 
     const S = db.model('Test', schema);
-    S.create({
+    const s = await S.create({
       nested: {
         string: 'hello',
         number: 1,
@@ -91,20 +87,17 @@ describe('schema alias option', function() {
         objectId: new mongoose.Types.ObjectId(),
         array: ['a', 'b', 'c', 'd']
       }
-    }, function(err, s) {
-      assert.ifError(err);
-
-      // Comparing with aliases
-      assert.equal(s.nested.string, s.StringAlias);
-      assert.equal(s.nested.number, s.NumberAlias);
-      assert.equal(s.nested.date, s.DateAlias);
-      assert.equal(s.nested.buffer, s.BufferAlias);
-      assert.equal(s.nested.boolean, s.BooleanAlias);
-      assert.equal(s.nested.mixed, s.MixedAlias);
-      assert.equal(s.nested.objectId, s.ObjectIdAlias);
-      assert.equal(s.nested.array, s.ArrayAlias);
-      done();
     });
+
+    // Comparing with aliases
+    assert.equal(s.nested.string, s.StringAlias);
+    assert.equal(s.nested.number, s.NumberAlias);
+    assert.equal(s.nested.date, s.DateAlias);
+    assert.equal(s.nested.buffer, s.BufferAlias);
+    assert.equal(s.nested.boolean, s.BooleanAlias);
+    assert.equal(s.nested.mixed, s.MixedAlias);
+    assert.equal(s.nested.objectId, s.ObjectIdAlias);
+    assert.equal(s.nested.array, s.ArrayAlias);
   });
 
   it('throws when alias option is invalid', function() {
@@ -159,5 +152,64 @@ describe('schema alias option', function() {
     assert.deepEqual(doc.toObject().name, { f: 'bar' });
     done();
     // acquit:ignore:end
+  });
+
+  it('array of aliases (gh-12368)', function() {
+    const productSchema = new Schema({
+      n: {
+        type: String,
+        alias: ['name', 'product_name']
+      }
+    });
+
+    const Product = db.model('Test', productSchema);
+    const doc = new Product({});
+
+    doc['product_name'] = 'Turbo Man';
+    assert.equal(doc.n, 'Turbo Man');
+    assert.equal(doc.name, 'Turbo Man');
+  });
+
+  it('alias() method (gh-12368)', function() {
+    const schema = new Schema({ name: String });
+
+    schema.alias('name', 'otherName');
+    assert.equal(schema.aliases['otherName'], 'name');
+    assert.ok(schema.virtuals['otherName']);
+
+    schema.alias('name', ['name1', 'name2']);
+    assert.equal(schema.aliases['name1'], 'name');
+    assert.equal(schema.aliases['name2'], 'name');
+    assert.ok(schema.virtuals['name1']);
+    assert.ok(schema.virtuals['name2']);
+  });
+  it('supports passing the alias name for an index (gh-13276)', function() {
+    const testSchema = new Schema({
+      fullName: {
+        type: String,
+        alias: 'short'
+      }
+    });
+    testSchema.index({ short: 1 });
+    const indexes = testSchema.indexes();
+    assert.equal(indexes[0][0].fullName, 1);
+  });
+
+  it('should disable the id virtual entirely if there\'s a field with alias `id` gh-13650', async function() {
+
+    const testSchema = new Schema({
+      _id: {
+        type: String,
+        required: true,
+        set: (val) => val.replace(/\s+/g, ' '),
+        alias: 'id'
+      }
+    });
+    const Test = db.model('gh13650', testSchema);
+    const doc = new Test({
+      id: 'H-1'
+    });
+    await doc.save();
+    assert.ok(doc);
   });
 });

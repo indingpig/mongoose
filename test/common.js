@@ -4,12 +4,10 @@
  * Module dependencies.
  */
 
-const Server = require('mongodb-topology-manager').Server;
-const mongoose = require('../');
+const mongoose = require('../index');
 const Collection = mongoose.Collection;
 const assert = require('assert');
 
-let server;
 const collectionNames = new Map();
 
 if (process.env.D === '1') {
@@ -20,39 +18,6 @@ if (process.env.PRINT_COLLECTIONS) {
     console.log('Colls', Array.from(collectionNames.entries()).sort((a, b) => a[1] - b[1]));
   });
 }
-
-// For 3.1.3 deprecations
-mongoose.set('useFindAndModify', false);
-mongoose.set('useCreateIndex', true);
-mongoose.set('useNewUrlParser', true);
-// 3.3.x deprecations
-mongoose.set('useUnifiedTopology', true);
-
-/**
- * Override all Collection related queries to keep count
- */
-
-[
-  'createIndex',
-  'ensureIndex',
-  'findAndModify',
-  'findOne',
-  'find',
-  'insert',
-  'save',
-  'update',
-  'remove',
-  'count',
-  'distinct',
-  'isCapped',
-  'options'
-].forEach(function(method) {
-  const oldMethod = Collection.prototype[method];
-
-  Collection.prototype[method] = function() {
-    return oldMethod.apply(this, arguments);
-  };
-});
 
 /**
  * Override Collection#onOpen to keep track of connections
@@ -76,7 +41,7 @@ Collection.prototype.onClose = function() {
 
 /**
  * Create a connection to the test database.
- * You can set the environmental variable MONGOOSE_TEST_URI to override this.
+ * You can set the environment variable MONGOOSE_TEST_URI to override this.
  *
  * @api private
  */
@@ -94,6 +59,7 @@ module.exports = function(options) {
 
   const noErrorListener = !!options.noErrorListener;
   delete options.noErrorListener;
+  options.enableUtf8Validation = false;
 
   const conn = mongoose.createConnection(uri, options);
 
@@ -123,34 +89,42 @@ module.exports = function(options) {
   return conn;
 };
 
-/*!
- * ignore
+function getUri(default_uri, db) {
+  const env = process.env.START_REPLICA_SET ? process.env.MONGOOSE_REPLSET_URI : process.env.MONGOOSE_TEST_URI;
+  const use = env ? env : default_uri;
+  const lastIndex = use.lastIndexOf('/');
+  const dbQueryString = use.slice(lastIndex);
+  const queryIndex = dbQueryString.indexOf('?');
+  const query = queryIndex === -1 ? '' : '?' + dbQueryString.slice(queryIndex + 1);
+  // use length if lastIndex is 9 or lower, because that would mean it found the last character of "mongodb://"
+  return use.slice(0, lastIndex <= 9 ? use.length : lastIndex) + `/${db}` + query;
+}
+
+/**
+ * Testing Databases, used for consistency
  */
 
-before(function(done) {
-  module.exports.mongodVersion(function(err, version) {
-    if (err) {
-      return done(err);
-    }
-    const mongo36 = version[0] > 3 || (version[0] === 3 && version[1] >= 6);
-    if (mongo36) {
-      mongoose.set('usePushEach', true);
-    }
-    done();
-  });
-});
+const databases = module.exports.databases = [
+  'mongoose_test',
+  'mongoose_test_2'
+];
 
-/*!
+/**
  * testing uri
  */
 
-module.exports.uri = 'mongodb://localhost:27017/mongoose_test';
+// the following has to be done, otherwise mocha will evaluate this before running the global-setup, where it becomes the default
+Object.defineProperty(module.exports, 'uri', {
+  get: () => getUri('mongodb://127.0.0.1:27017/', databases[0])
+});
 
-/*!
+/**
  * testing uri for 2nd db
  */
 
-module.exports.uri2 = 'mongodb://localhost:27017/mongoose_test_2';
+Object.defineProperty(module.exports, 'uri2', {
+  get: () => getUri('mongodb://127.0.0.1:27017/', databases[1])
+});
 
 /**
  * expose mongoose
@@ -162,74 +136,48 @@ module.exports.mongoose = mongoose;
  * expose mongod version helper
  */
 
-module.exports.mongodVersion = function(cb) {
-  const db = module.exports();
-  db.on('error', cb);
+module.exports.mongodVersion = async function() {
+  const db = await module.exports();
 
-  db.on('open', function() {
-    const admin = db.db.admin();
-    admin.serverStatus(function(err, info) {
-      if (err) {
-        return cb(err);
-      }
-      const version = info.version.split('.').map(function(n) {
-        return parseInt(n, 10);
-      });
-      db.close(function() {
-        cb(null, version);
-      });
-    });
+  const admin = db.client.db().admin();
+
+  const info = await admin.serverStatus();
+  const version = info.version.split('.').map(function(n) {
+    return parseInt(n, 10);
   });
+  await db.close();
+  return version;
 };
 
-function dropDBs(done) {
-  const db = module.exports({ noErrorListener: true });
-  db.once('open', function() {
-    // drop the default test database
-    db.db.dropDatabase(function() {
-      done();
-    });
-  });
+async function dropDBs() {
+  this.timeout(60000);
+
+  // retry the "dropDBs" actions if the error is "operation was interrupted", which can often happen in replset CI tests
+  let retries = 5;
+  while (retries > 0) {
+    retries -= 1;
+    try {
+      await _dropDBs();
+    } catch (err) {
+      if (err instanceof mongoose.mongo.MongoWriteConcernError && /operation was interrupted/.test(err.message)) {
+        console.log('DropDB operation interrupted, retrying'); // log that a error was thrown to know that it is going to re-try
+        continue;
+      }
+
+      throw err;
+    }
+  }
 }
 
-before(function() {
-  return server.purge();
-});
+async function _dropDBs() {
+  const db = await module.exports({ noErrorListener: true }).asPromise();
+  await db.dropDatabase();
+  await db.close();
+}
 
-after(function() {
-  this.timeout(15000);
+before(dropDBs);
 
-  return server.stop();
-});
-
-before(function(done) {
-  this.timeout(10 * 1000);
-  dropDBs(done);
-});
-
-after(function(done) {
-  dropDBs(() => {});
-
-  // Give `dropDatabase()` some time to run
-  setTimeout(() => done(), 250);
-});
-
-module.exports.server = server = new Server('mongod', {
-  bind_ip: '127.0.0.1',
-  port: 27000,
-  dbpath: './data/db/27000'
-});
-
-beforeEach(function() {
-  if (this.currentTest) {
-    global.CURRENT_TEST = this.currentTest.title;
-    if (this.currentTest.parent.title) {
-      global.CURRENT_TEST = this.currentTest.parent.title + global.CURRENT_TEST;
-    }
-  } else {
-    global.CURRENT_TEST = 'N/A';
-  }
-});
+after(dropDBs);
 
 process.on('unhandledRejection', function(error, promise) {
   if (error.$expected) {

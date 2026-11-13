@@ -7,7 +7,6 @@
 const start = require('./common');
 
 const assert = require('assert');
-const co = require('co');
 
 const mongoose = start.mongoose;
 const Schema = mongoose.Schema;
@@ -23,8 +22,8 @@ describe('model: findOneAndDelete:', function() {
     db = start();
   });
 
-  after(function(done) {
-    db.close(done);
+  after(async function() {
+    await db.close();
   });
 
   beforeEach(() => db.deleteModel(/.*/));
@@ -32,7 +31,7 @@ describe('model: findOneAndDelete:', function() {
   afterEach(() => require('./util').stopRemainingOps(db));
 
   beforeEach(function() {
-    Comments = new Schema;
+    Comments = new Schema();
 
     Comments.add({
       title: String,
@@ -78,28 +77,26 @@ describe('model: findOneAndDelete:', function() {
     BlogPost = db.model('BlogPost', BlogPost);
   });
 
-  it('returns the original document', function() {
+  it('returns the original document', async function() {
     const M = BlogPost;
     const title = 'remove muah';
 
     const post = new M({ title: title });
 
-    return co(function*() {
-      yield post.save();
+    await post.save();
 
-      const doc = yield M.findOneAndDelete({ title: title });
+    const doc = await M.findOneAndDelete({ title: title });
 
-      assert.equal(post.id, doc.id);
+    assert.equal(post.id, doc.id);
 
-      const gone = yield M.findById(post.id);
-      assert.equal(gone, null);
-    });
+    const gone = await M.findById(post.id);
+    assert.equal(gone, null);
   });
 
-  it('options/conditions/doc are merged when no callback is passed', function(done) {
+  it('options/conditions/doc are merged when no callback is passed', function() {
     const M = BlogPost;
 
-    const now = new Date;
+    const now = new Date();
     let query;
 
     // Model.findOneAndDelete
@@ -129,91 +126,24 @@ describe('model: findOneAndDelete:', function() {
     query = M.find().findOneAndDelete();
     assert.equal(query._fields, undefined);
     assert.equal(query._conditions.author, undefined);
-    done();
   });
 
-  it('executes when a callback is passed', function(done) {
-    const M = BlogPost;
-    let pending = 5;
-
-    M.findOneAndDelete({ name: 'aaron1' }, { select: 'name' }, cb);
-    M.findOneAndDelete({ name: 'aaron1' }, cb);
-    M.where().findOneAndDelete({ name: 'aaron1' }, { select: 'name' }, cb);
-    M.where().findOneAndDelete({ name: 'aaron1' }, cb);
-    M.where('name', 'aaron1').findOneAndDelete(cb);
-
-    function cb(err, doc) {
-      assert.ifError(err);
-      assert.equal(doc, null); // no previously existing doc
-      if (--pending) return;
-      done();
-    }
-  });
-
-  it('executed with only a callback throws', function(done) {
-    const M = BlogPost;
-    let err;
-
-    try {
-      M.findOneAndDelete(function() {});
-    } catch (e) {
-      err = e;
-    }
-
-    assert.ok(/First argument must not be a function/.test(err));
-    done();
-  });
-
-  it('executed with only a callback throws', function(done) {
-    const M = BlogPost;
-    let err;
-
-    try {
-      M.findByIdAndDelete(function() {});
-    } catch (e) {
-      err = e;
-    }
-
-    assert.ok(/First argument must not be a function/.test(err));
-    done();
-  });
-
-  it('executes when a callback is passed', function(done) {
-    const M = BlogPost;
-    const _id = new DocumentObjectId;
-    let pending = 2;
-
-    M.findByIdAndDelete(_id, { select: 'name' }, cb);
-    M.findByIdAndDelete(_id, cb);
-
-    function cb(err, doc) {
-      assert.ifError(err);
-      assert.equal(doc, null); // no previously existing doc
-      if (--pending) return;
-      done();
-    }
-  });
-
-  it('returns the original document', function(done) {
+  it('returns the original document', async function() {
     const M = BlogPost;
     const title = 'remove muah pleez';
 
     const post = new M({ title: title });
-    post.save(function(err) {
-      assert.ifError(err);
-      M.findByIdAndDelete(post.id, function(err, doc) {
-        assert.ifError(err);
-        assert.equal(post.id, doc.id);
-        M.findById(post.id, function(err, gone) {
-          assert.ifError(err);
-          assert.equal(gone, null);
-          done();
-        });
-      });
-    });
+    await post.save();
+
+    const doc = await M.findByIdAndDelete(post.id);
+
+    assert.equal(post.id, doc.id);
+    const gone = await M.findById(post.id);
+
+    assert.equal(gone, null);
   });
 
-  it('options/conditions/doc are merged when no callback is passed', function(done) {
+  it('options/conditions/doc are merged when no callback is passed', function() {
     const M = BlogPost;
     const _id = new DocumentObjectId();
 
@@ -232,28 +162,28 @@ describe('model: findOneAndDelete:', function() {
     assert.equal(query.options.new, undefined);
     assert.equal(query._fields, undefined);
     assert.equal(query._conditions._id, undefined);
-    done();
   });
 
-  it('supports v3 select string syntax', function(done) {
+  it('supports v3 select string syntax', function() {
     const M = BlogPost;
     const _id = new DocumentObjectId();
 
     let query;
 
     query = M.findByIdAndDelete(_id, { select: 'author -title' });
+    query._applyPaths();
     assert.strictEqual(1, query._fields.author);
     assert.strictEqual(0, query._fields.title);
 
     query = M.findOneAndDelete({}, { select: 'author -title' });
+    query._applyPaths();
     assert.strictEqual(1, query._fields.author);
     assert.strictEqual(0, query._fields.title);
-    done();
   });
 
-  it('supports v3 select object syntax', function(done) {
+  it('supports v3 select object syntax', function() {
     const M = BlogPost;
-    const _id = new DocumentObjectId;
+    const _id = new DocumentObjectId();
 
     let query;
 
@@ -264,10 +194,9 @@ describe('model: findOneAndDelete:', function() {
     query = M.findOneAndDelete({}, { select: { author: 1, title: 0 } });
     assert.strictEqual(1, query._fields.author);
     assert.strictEqual(0, query._fields.title);
-    done();
   });
 
-  it('supports v3 sort string syntax', function(done) {
+  it('supports v3 sort string syntax', function() {
     const M = BlogPost;
     const _id = new DocumentObjectId();
 
@@ -282,10 +211,9 @@ describe('model: findOneAndDelete:', function() {
     assert.equal(Object.keys(query.options.sort).length, 2);
     assert.equal(query.options.sort.author, 1);
     assert.equal(query.options.sort.title, -1);
-    done();
   });
 
-  it('supports v3 sort object syntax', function(done) {
+  it('supports v3 sort object syntax', function() {
     const M = BlogPost;
     const _id = new DocumentObjectId();
 
@@ -300,55 +228,47 @@ describe('model: findOneAndDelete:', function() {
     assert.equal(Object.keys(query.options.sort).length, 2);
     assert.equal(query.options.sort.author, 1);
     assert.equal(query.options.sort.title, -1);
-    done();
   });
 
-  it('supports population (gh-1395)', function(done) {
+  it('supports population (gh-1395)', async function() {
     const M = db.model('Test1', { name: String });
     const N = db.model('Test2', { a: { type: Schema.ObjectId, ref: 'Test1' }, i: Number });
 
-    M.create({ name: 'i am an A' }, function(err, a) {
-      if (err) return done(err);
-      N.create({ a: a._id, i: 10 }, function(err, b) {
-        if (err) return done(err);
+    const a = await M.create({ name: 'i am an A' });
 
-        N.findOneAndDelete({ _id: b._id }, { select: 'a -_id' })
-          .populate('a')
-          .exec(function(err, doc) {
-            if (err) return done(err);
-            assert.ok(doc);
-            assert.equal(doc._id, undefined);
-            assert.ok(doc.a);
-            assert.equal('i am an A', doc.a.name);
-            done();
-          });
-      });
-    });
+    const b = await N.create({ a: a._id, i: 10 });
+
+    const doc = await N.findOneAndDelete({ _id: b._id }, { select: 'a -_id' })
+      .populate('a')
+      .exec();
+
+    assert.ok(doc);
+    assert.equal(doc._id, undefined);
+    assert.ok(doc.a);
+    assert.equal('i am an A', doc.a.name);
   });
 
-  it('only calls setters once (gh-6203)', function() {
-    return co(function*() {
-      const calls = [];
-      const userSchema = new mongoose.Schema({
-        name: String,
-        foo: {
-          type: String,
-          set: function(val) {
-            calls.push(val);
-            return val + val;
-          }
+  it('only calls setters once (gh-6203)', async function() {
+    const calls = [];
+    const userSchema = new mongoose.Schema({
+      name: String,
+      foo: {
+        type: String,
+        set: function(val) {
+          calls.push(val);
+          return val + val;
         }
-      });
-      const Model = db.model('Test', userSchema);
-
-      yield Model.findOneAndDelete({ foo: '123' }, { name: 'bar' });
-
-      assert.deepEqual(calls, ['123']);
+      }
     });
+    const Model = db.model('Test', userSchema);
+
+    await Model.findOneAndDelete({ foo: '123' }, { name: 'bar' });
+
+    assert.deepEqual(calls, ['123']);
   });
 
   describe('middleware', function() {
-    it('works', function(done) {
+    it('works', async function() {
       const s = new Schema({
         topping: { type: String, default: 'bacon' },
         base: String
@@ -369,23 +289,20 @@ describe('model: findOneAndDelete:', function() {
         base: 'eggs'
       });
 
-      breakfast.save(function(error) {
-        assert.ifError(error);
+      await breakfast.save();
 
-        Breakfast.findOneAndDelete(
-          { base: 'eggs' },
-          {},
-          function(error, breakfast) {
-            assert.ifError(error);
-            assert.equal(breakfast.base, 'eggs');
-            assert.equal(preCount, 1);
-            assert.equal(postCount, 1);
-            done();
-          });
-      });
+
+      const deletedBreakfast = await Breakfast.findOneAndDelete(
+        { base: 'eggs' },
+        {}
+      );
+
+      assert.equal(deletedBreakfast.base, 'eggs');
+      assert.equal(preCount, 1);
+      assert.equal(postCount, 1);
     });
 
-    it('works with exec() (gh-439)', function(done) {
+    it('works with exec() (gh-439)', async function() {
       const s = new Schema({
         topping: { type: String, default: 'bacon' },
         base: String
@@ -406,19 +323,38 @@ describe('model: findOneAndDelete:', function() {
         base: 'eggs'
       });
 
-      breakfast.save(function(error) {
-        assert.ifError(error);
+      await breakfast.save();
 
-        Breakfast.
-          findOneAndDelete({ base: 'eggs' }, {}).
-          exec(function(error, breakfast) {
-            assert.ifError(error);
-            assert.equal(breakfast.base, 'eggs');
-            assert.equal(preCount, 1);
-            assert.equal(postCount, 1);
-            done();
-          });
-      });
+
+      const updatedBreakfast = await Breakfast.
+        findOneAndDelete({ base: 'eggs' }, {}).
+        exec();
+
+      assert.equal(updatedBreakfast.base, 'eggs');
+      assert.equal(preCount, 1);
+      assert.equal(postCount, 1);
     });
+  });
+
+  it('supports the `includeResultMetadata` option (gh-13539)', async function() {
+    const testSchema = new mongoose.Schema({
+      name: String
+    });
+    const Test = db.model('Test', testSchema);
+    await Test.create({ name: 'Test' });
+    const doc = await Test.findOneAndDelete(
+      { name: 'Test' },
+      { includeResultMetadata: false }
+    );
+    assert.equal(doc.ok, undefined);
+    assert.equal(doc.name, 'Test');
+
+    await Test.create({ name: 'Test' });
+    const data = await Test.findOneAndDelete(
+      { name: 'Test' },
+      { includeResultMetadata: true }
+    );
+    assert(data.ok);
+    assert.equal(data.value.name, 'Test');
   });
 });

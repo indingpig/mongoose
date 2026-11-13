@@ -1,11 +1,13 @@
 'use strict';
 
-const Schema = require('../../lib/schema');
 const assert = require('assert');
+
+require('../common'); // required for side-effect setup (so that the default driver is set-up)
+const Schema = require('../../lib/schema');
 const getVirtual = require('../../lib/helpers/populate/getVirtual');
 
 describe('getVirtual', function() {
-  it('handles embedded discriminators (gh-6411)', function(done) {
+  it('handles embedded discriminators (gh-6411)', function() {
     // Generate Embedded Discriminators
     const eventSchema = new Schema(
       { message: String },
@@ -39,13 +41,13 @@ describe('getVirtual', function() {
       product: { type: String }
     }));
 
-    assert.equal(getVirtual(batchSchema, 'nested.events.users_$').virtual.options.ref,
-      'Users');
-
-    done();
+    assert.equal(
+      getVirtual(batchSchema, 'nested.events.users_$').virtual.options.ref,
+      'Users'
+    );
   });
 
-  it('handles embedded discriminators under single nested (gh-6488)', function(done) {
+  it('handles embedded discriminators under single nested (gh-6488)', function() {
     // Generate Embedded Discriminators
     const eventSchema = new Schema({ message: String },
       { discriminatorKey: 'kind' });
@@ -82,11 +84,9 @@ describe('getVirtual', function() {
 
     const res = getVirtual(batchSchema, 'nested.events.nestedLayer.users_$');
     assert.equal(res.virtual.options.ref, 'Users');
-
-    done();
   });
 
-  it('handles multiple calls with discriminator under doc array (gh-6644)', function(done) {
+  it('handles multiple calls with discriminator under doc array (gh-6644)', function() {
     const eventSchema = new Schema({ message: String }, { discriminatorKey: 'kind' });
 
     const batchSchema = new Schema({ events: [eventSchema] });
@@ -113,7 +113,27 @@ describe('getVirtual', function() {
     res = getVirtual(batchSchema, 'events.users_$');
     assert.equal(res.virtual.options.ref, 'Users');
     assert.equal(res.nestedSchemaPath, 'events');
+  });
 
-    done();
+  it('handles virtuals defined under map (gh-15439)', function() {
+    const subSchema = new Schema({
+      name: String,
+      friends: [Number]
+    });
+    subSchema.virtual('friends_$', {
+      ref: 'User',
+      localField: 'users.$*.friends',
+      foreignField: 'userId'
+    });
+
+    const schema = new Schema({
+      users: {
+        type: Map,
+        of: subSchema
+      }
+    });
+
+    const res = getVirtual(schema, 'users.$*.friends_$');
+    assert.equal(res.virtual.options.ref, 'User');
   });
 });

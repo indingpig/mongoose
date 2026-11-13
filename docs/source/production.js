@@ -1,5 +1,7 @@
 'use strict';
-module.exports = {
-    images: []
-  , title: 'Production'
-}
+const { mapSubDoc } = require('./utils');
+
+mapSubDoc('production', {
+  title: '',
+  markdown: true
+}, module.exports);
